@@ -1,0 +1,6 @@
+fsck_hfs.tproj/*.o
+fsck_hfs.tproj/dfalib/*.o
+fsck_hfs.tproj/dfalib/libdfa.a
+fsck_hfs.tproj/fsck_hfs
+newfs_hfs.tproj/*.o
+newfs_hfs.tproj/newfs_hfs

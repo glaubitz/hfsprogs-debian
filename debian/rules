@@ -1,0 +1,35 @@
+#!/usr/bin/make -f
+# -*- makefile -*-
+
+package=hfsprogs
+tmpdir=debian/$(package)
+shrdir=$(tmpdir)/usr/share/$(package)
+docdir=$(tmpdir)/usr/share/doc/$(package)
+mansec=8
+mandir=$(tmpdir)/usr/share/man/man$(mansec)
+
+CFLAGS += -DDEBUG_BUILD=0 -D_FILE_OFFSET_BITS=64 -D LINUX=1 -D BSD=1 -I$(CURDIR)/include
+LDFLAGS += -Wl,--as-needed
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	$(MAKE) -f Makefile.lnx CFLAGS="$(CFLAGS)" LDFLAGS="$(LDFLAGS)"
+
+override_dh_auto_install:
+	dh_testdir
+	dh_testroot
+	dh_prep
+	dh_installdirs
+
+	install -m 644 newfs_hfs.tproj/hfsbootdata.img $(shrdir)/hfsbootdata
+	install -m 755 newfs_hfs.tproj/newfs_hfs   $(tmpdir)/sbin/mkfs.hfsplus
+	install -m 755 fsck_hfs.tproj/fsck_hfs     $(tmpdir)/sbin/fsck.hfsplus
+	install -m 644 newfs_hfs.tproj/newfs_hfs.8 $(mandir)/mkfs.hfsplus.8
+	install -m 644 fsck_hfs.tproj/fsck_hfs.8   $(mandir)/fsck.hfsplus.8
+
+override_dh_auto_clean:
+	dh_clean
+
+override_dh_auto_test:

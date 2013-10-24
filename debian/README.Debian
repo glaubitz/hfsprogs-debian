@@ -1,0 +1,13 @@
+hfsprogs for Debian
+-------------------
+
+This package currently only provides mkfs.hfs (mkhfs) and fsck.hfs
+(hfsfsck).  In the future, it may provide more tools from the Darwin
+sources, such as a utility to tune a filesystem, like disabling the
+journaling of the filesystem.
+
+It includes a patch from from Gentoo, as described in their wiki:
+<http://gentoo-wiki.com/HOWTO_hfsplus>.
+
+
+ -- Rogério Brito <rbrito@users.sf.net>  Mon, 16 Jul 2007 17:55:21 -0300

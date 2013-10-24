@@ -1,0 +1,267 @@
+hfsprogs (332.25-11) unstable; urgency=low
+
+  * debian/control: Remove DMUA flag.
+  * debian/rules: Override rules for which we don't have makefiles.
+    (Closes: #724195)
+  * debian/patches:
+    + Change the headers to be friendlier with gbp pq.
+    + Remove unreferenced patches in series file.
+    + Coalesce all patches touching man pages into one.
+    + Regenerate everything from patch-queue branch.
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Thu, 24 Oct 2013 01:20:15 -0200
+
+hfsprogs (332.25-10) unstable; urgency=low
+
+  * debian/compat:
+    + Set to 9 to gain the hardening flags for compilation.
+  * debian/control:
+    + Simple run of `wrap-and-sort -sav` for legibility.
+    + Update Standards-Version to 3.9.3, with no further changes.
+    + B-D on debhelper >= 9 and drop versioned B-D on dpkg-dev.
+  * debian/rules:
+    + First steps toward making the build rules saner with dh.
+    + Change from `dh_clean -k` to `dh_prep`.
+    + Make declarative use of `dh_auto_clean`.
+  * debian/patches:
+    + Add patch from Matthew Garrett to fix UUID creation. Thanks to
+      Matthew Garrett for the patch and Lars Noodén for reporting.
+      (LP:737002)
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Mon, 12 Mar 2012 08:16:11 -0300
+
+hfsprogs (332.25-9) unstable; urgency=low
+
+  * debian/patches/80-remove_see-also_from_manpage.patch:
+    + Fix spelling in fsck.hfsplus's manpage. Closes: #575201.
+      Thanks Lionel Elie Mamane <lmamane@debian.org>.
+    + Fix manpages not reflecting the situation of Linux/Debian systems.
+      Closes: #598714. Thanks Christoph Hellwig <hch@lst.de>.
+  * debian/patches:
+    + Move 80-remove_see-also_from_manpage.patch to 80-fix_manpages.patch.
+    + Integrate 90-fix_manpage_typos.patch into 80-fix_manpages.patch.
+    + Update series.
+  * debian/control:
+    + Update Standards-Version to 3.9.1, with no further changes.
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Thu, 25 Nov 2010 03:11:42 -0200
+
+hfsprogs (332.25-8) unstable; urgency=low
+
+  * Use a FTBFS bug revealed by the kfreebsd-* ports.
+    This was reported by Cyril Brulebois, and patched by: Petr Salinger.
+    Closes: #566916
+  * Remove b-dep on kfreebsd-kernel-headers, as it is build-essential.
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Sun, 31 Jan 2010 07:01:54 -0200
+
+hfsprogs (332.25-7) unstable; urgency=low
+
+  * Include b-dep on kfreebsd-kernel-headers on kfreebsd-*. Closes: #566916
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Tue, 26 Jan 2010 19:39:42 -0200
+
+hfsprogs (332.25-6) experimental; urgency=low
+
+  * some code cleanup against upstream.
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Wed, 18 Nov 2009 07:22:09 -0200
+
+hfsprogs (332.25-5) unstable; urgency=low
+
+  * incorporate Goswin von Brederlow's patch.
+    + eliminate the need to use -m32 in 64-bit arches.
+    + eliminate the need for the gcc-multilib hack.
+    + can compile on every arch out there.
+    + upstream's code could be cleaner.
+    + Closes: #436159.
+  * optimize for size again
+  * avoid duplication of code (strlcpy):
+    + linking against libbsd.
+    + kill custom workaround of strlcpy. Closes: #556596.
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Tue, 17 Nov 2009 06:17:50 -0200
+
+hfsprogs (332.25-4) unstable; urgency=low
+
+  * upload to unstable, now that earlier versions are in testing.
+  * change to "3.0 (quilt)" format.
+    + drop explicit mentions of quilt on debian/rules.
+    + drop build-dependency on quilt on debian/control.
+    + create debian/source/format.
+    + remove debian/README.source.
+  * debian/control:
+    + remove armeb from arch list.
+    + group kfreebsd-* entries together.
+  * debian/rules:
+    + don't recursively remove files, when no directory is involved.
+    + clean up internal variables.
+    + enable more warnings.
+    + optimize with O2 for the moment, instead of Os.
+  * debian/{rules,control}:
+    + make hardened builds.
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Mon, 16 Nov 2009 05:40:00 -0200
+
+hfsprogs (332.25-3) experimental; urgency=low
+
+  * fix compilation flags with binutils-gold. (Closes: #554800).
+  * link with -Wl,--as-needed.
+  * honor *FLAGS in our custom-made makefiles.
+  * build again with -Wall -g to get closer to a release.
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Fri, 06 Nov 2009 19:44:31 -0200
+
+hfsprogs (332.25-2) experimental; urgency=low
+
+  * re-include patch to fix spelling errors in the manpage.
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Tue, 03 Nov 2009 16:39:00 -0200
+
+hfsprogs (332.25-1) experimental; urgency=low
+
+  * New upstream release:
+    + Now at the latest version released with MacOS X 10.4.
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Tue, 03 Nov 2009 16:23:40 -0200
+
+hfsprogs (332.23-1) experimental; urgency=low
+
+  * New upstream release.
+    (still catching up with Apple, but we'll get closer now).
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Tue, 03 Nov 2009 16:20:17 -0200
+
+hfsprogs (332.22-1) experimental; urgency=low
+
+  * New upstream release.
+    (still catching up with Apple, but we'll get closer now).
+  * create new patch to avoid conflict with eglibc's dprintf and the
+    custom version present in the sources.
+  * refreshed all the patches to avoid conflicts.
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Tue, 03 Nov 2009 15:44:48 -0200
+
+hfsprogs (332.18-1) experimental; urgency=low
+
+  * New upstream version.
+    (still catching up with Apple, but we'll get closer now).
+  * debian/control:
+    + include avr32 as an allowed arch.
+  * debian/patches:
+    + 00-create_makefiles: add a file for fsck.hfsplus.
+    + 10-linux_specific_code: remove an #undefine to allow compilation.
+    + 90-workaround_strlcpy: s/strlcpy/strncpy/ (yes, it's dangerous).
+    + readapt the patches *a* *lot* (what a headache!).
+    + refresh the patches.
+  * debian/rules:
+    + disabled warnings for a little while.
+  * debian/watch:
+    + include a new one (caution: Apple may change their site layout).
+  * debian/README.source:
+    + include, as we are using quilt.
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Mon, 17 Aug 2009 15:23:01 -0300
+
+hfsprogs (332.14-8) unstable; urgency=low
+
+  * fix spelling in manpages, thanks to A. Costa. (Closes: #547425).
+  * include a README.source file as per policy.
+  * include a watch file to track upstream versions.
+  * upgrade Standards-Version 3.8.3. No changes needed.
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Sun, 25 Oct 2009 10:01:03 -0200
+
+hfsprogs (332.14-7) unstable; urgency=low
+
+  * debian/control:
+    + try to support for multiarch. Tks Petr Salinger. (Closes: #537378)
+    + include support for kfreebsd-amd64.
+    + upgrade to Standards version 3.8.2. No changes needed.
+  * debian/copyright:
+    + update my copyright.
+  * debian/{dirs,lintian.override,rules}:
+    + remove unused parts and installation.
+  * debian/rules:
+    + remove commented lines.
+    + clean up a little.
+    + document the compilation of kfreebsd-amd64 and amd64 with 32 bit
+      instructions.
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Sun, 02 Aug 2009 13:28:14 -0300
+
+hfsprogs (332.14-6) unstable; urgency=low
+
+  * debian/patches/*: include description (lintian).
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Tue, 03 Mar 2009 11:26:11 -0300
+
+hfsprogs (332.14-5) unstable; urgency=low
+
+  * debian/patches: break-up the Gentoo patch into smaller patches.
+  * debian/patches: reorder the patches.
+  * debian/patches: refresh the patches.
+  * debian/patches: remove mention of pdisk (Closes: #482868) (LP: #234749).
+  * debian/control: include Homepage field.
+  * debian/control: update Standards-Version to 3.8.0. No changes required.
+  * debian/control: include DM-Upload-Allowed, as I am a DM now.
+  * debian/control: remove statement about using journals (LP: #164151).
+  * debian/rules: add -Wextra compilation flag.
+  * debian/rules: use quilt.make and remove home-brew solution.
+  * debian/watch: create watch file (lintian warning).
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Tue, 07 Oct 2008 05:08:48 -0300
+
+hfsprogs (332.14-4) unstable; urgency=low
+
+  * debian/changelog: fix typo on Adam's name.
+  * debian/control: include "amd64" as a 64 bit target architecture.
+  * debian/control: include "hppa mips mipsel s390" 32 bit target
+    architectures (Closes: #482070).
+  * debian/control: include "m68k" as another architecture.
+    (Tks: Gerfried Fuchs)
+  * debian/rules: include detection of amd64 and pass information to build
+    process. Warning: the kernel needs to have support/emulation for 32 bit
+    applications enabled. (Tks: Adam Cécile)
+  * debian/rules: uses $(CURDIR) instead of $(PWD) as per lintian hint.
+  * debian/{lintian-override,rules}: create a lintian override for the
+    license (only the packaging is GPL, not the entire source code).
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Tue, 20 May 2008 18:57:18 -0300
+
+hfsprogs (332.14-3) unstable; urgency=low
+
+  * debian/control: include more 32-bit architectures as requested
+    (Closes: #469151). Despite the fact that there is already a new
+    upstream version, I plan on having it be a team-managed package.
+  * Update to new Debian Policy Standard (no changes).
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Thu, 08 May 2008 17:26:15 -0300
+
+hfsprogs (332.14-2) unstable; urgency=low
+
+  * debian/control: restrict the number of architectures to i386 and powerpc,
+    since the package is not 64 bit clean (compiling on amd64 with option -m32
+    is under study for a future version of the package). See for reference bug
+    #436159 which originated the discussion and for which this is a workaround
+    to be addressed properly later.
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Mon, 03 Dec 2007 20:06:00 -0200
+
+hfsprogs (332.14-1) unstable; urgency=low
+
+  * Initial release (Closes: #433168)
+  * debian/control: add dependency on libssl-dev for the hash functions
+  * debian/control: add dependency on quilt
+  * debian/copyright: included the complete text of the APSL 2.0
+  * debian/links: create links for HFS variants of the utils and manpages
+  * debian/rules: use quilt to patch the source, so we get a Makefile for Linux
+  * debian/patches: incorporated patch from Gentoo to work with quilt
+  * debian/patches: included patch to fix *roff warning
+  * debian/patches: added patch to install bootdata on usr/share correctly
+  * debian/patches: added patch to enable the -a for fsck (Tks: Adam Cécile)
+  * debian/dirs: added entry for directory mentioned above
+  * debian/rules: added the file for wrapper HFS filesystem
+  * debian/README.Debian: give the URL of the Gentoo instructions
+
+ -- Rogério Brito <rbrito@ime.usp.br>  Fri, 20 Jul 2007 09:37:02 -0300

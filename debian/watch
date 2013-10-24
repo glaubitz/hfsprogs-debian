@@ -1,0 +1,3 @@
+version=3
+opts="uversionmangle=s/\///" \
+http://www.opensource.apple.com/source/diskdev_cmds/diskdev_cmds-(.*)

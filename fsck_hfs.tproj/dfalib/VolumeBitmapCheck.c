@@ -1,22 +1,23 @@
 /*
- * Copyright (c) 2000-2002, 2004-2006 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 2000-2002, 2004-2011 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
- *
- * The contents of this file constitute Original Code as defined in and
- * are subject to the Apple Public Source License Version 1.1 (the
- * "License").  You may not use this file except in compliance with the
- * License.  Please obtain a copy of the License at
- * http://www.apple.com/publicsource and read it before using this file.
- *
- * This Original Code and all software distributed under the License are
- * distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY KIND, EITHER
+ * 
+ * This file contains Original Code and/or Modifications of Original Code
+ * as defined in and that are subject to the Apple Public Source License
+ * Version 2.0 (the 'License'). You may not use this file except in
+ * compliance with the License. Please obtain a copy of the License at
+ * http://www.opensource.apple.com/apsl/ and read it before using this
+ * file.
+ * 
+ * The Original Code and all software distributed under the License are
+ * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
- * License for the specific language governing rights and limitations
- * under the License.
- *
+ * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
+ * Please see the License for the specific language governing rights and
+ * limitations under the License.
+ * 
  * @APPLE_LICENSE_HEADER_END@
  */
 
@@ -29,6 +30,10 @@
  */
 
 #include "Scavenger.h"
+
+#if !LINUX
+#include <sys/disk.h>
+#endif
 
 #include <bitstring.h>
 
@@ -51,8 +56,8 @@ enum {
 };
 
 
-#define kAllBitsSetInWord	0xFFFFFFFFul
-#define kMSBBitSetInWord	0x80000000ul
+#define kAllBitsSetInWord	0xFFFFFFFFu
+#define kMSBBitSetInWord	0x80000000u
 
 enum {
 	kSettingBits		= 1,
@@ -178,7 +183,7 @@ int BitMapCheckEnd(void)
 		int maxdepth = 0;
 
 		BMS_MaxDepth(gBMS_Root, 0, &maxdepth);
-		printf("   %d full segments, %d segment nodes (max depth was %d nodes)\n",
+		plog("   %d full segments, %d segment nodes (max depth was %d nodes)\n",
 		       gFullSegments, gSegmentNodes, maxdepth);
 #endif
 		free(gFullBitmapSegment);
@@ -257,7 +262,7 @@ static int GetSegmentBitmap(UInt32 startBit, UInt32 **buffer, int bitOperation)
 		
 	if (*buffer == NULL) {
 #if _VBC_DEBUG_
-		printf("GetSegmentBitmap: couldn't get a node for block %d, segment %d\n", startBit, segment);
+		plog("GetSegmentBitmap: couldn't get a node for block %d, segment %d\n", startBit, segment);
 #endif
 		return (-1); /* oops */
 	}
@@ -265,22 +270,22 @@ static int GetSegmentBitmap(UInt32 startBit, UInt32 **buffer, int bitOperation)
 #if 0
 	if (segNode) {
 		int i;
-		printf("  segment %d: L=0x%08x, R=0x%08x \n< ",
+		plog("  segment %d: L=0x%08x, R=0x%08x \n< ",
 			(int)segNode->segment, (int)segNode->left, segNode->right);
 		for (i = 0; i < kWordsPerSegment; ++i) {
-			printf("0x%08x ", segNode->bitmap[i]);
+			plog("0x%08x ", segNode->bitmap[i]);
 			if ((i & 0x3) == 0x3)
-				printf("\n  ");
+				plog("\n  ");
 		}
-		printf("\n");
+		plog("\n");
 	}
 
 	if (bitOperation == kSettingBits && *buffer && bcmp(*buffer, gFullBitmapSegment, kBytesPerSegment) == 0) {
-		printf("*** segment %d (start blk %d) is already full!\n", segment, startBit);
+		plog("*** segment %d (start blk %d) is already full!\n", segment, startBit);
 		exit(5);
 	}
 	if (bitOperation == kClearingBits && *buffer && bcmp(*buffer, gEmptyBitmapSegment, kBytesPerSegment) == 0) {
-		printf("*** segment %d (start blk %d) is already empty!\n", segment, startBit);
+		plog("*** segment %d (start blk %d) is already empty!\n", segment, startBit);
 		exit(5);
 	}
 #endif
@@ -316,13 +321,13 @@ void TestSegmentBitmap(UInt32 startBit)
 	if ((segNode = BMS_Lookup(segment)) != NULL) {
 #if 0
 		int i;
-		printf("> ");
+		plog("> ");
 		for (i = 0; i < kWordsPerSegment; ++i) {
-			printf("0x%08x ", segNode->bitmap[i]);
+			plog("0x%08x ", segNode->bitmap[i]);
 			if ((i & 0x3) == 0x3)
-				printf("\n  ");
+				plog("\n  ");
 		}
-		printf("\n");
+		plog("\n");
 #endif
 		if (segment != 0 && bcmp(&segNode->bitmap[0], gFullBitmapSegment, kBytesPerSegment) == 0) {
 			if (BMS_Delete(segment) != NULL) {
@@ -423,7 +428,7 @@ int CaptureBitmapBits(UInt32 startBit, UInt32 bitCount)
 		if (SWAP_BE32(*currentWord) & bitMask) {
 			overlap = true;
 
-		//	printf("(1) overlapping file blocks! word: 0x%08x, mask: 0x%08x\n", *currentWord, bitMask);
+			//plog("(1) overlapping file blocks! word: 0x%08x, mask: 0x%08x\n", *currentWord, bitMask);
 		}
 		
 		*currentWord |= SWAP_BE32(bitMask);  /* set the bits in the bitmap */
@@ -455,7 +460,7 @@ int CaptureBitmapBits(UInt32 startBit, UInt32 bitCount)
 		if (SWAP_BE32(*currentWord) & bitMask) {
 			overlap = true;
 
-		//	printf("(2) overlapping file blocks! word: 0x%08x, mask: 0x%08x\n", *currentWord, bitMask);
+			//plog("(2) overlapping file blocks! word: 0x%08x, mask: 0x%08x\n", *currentWord, bitMask);
 		}
 		
 		*currentWord |= SWAP_BE32(bitMask);  /* set the bits in the bitmap */
@@ -485,7 +490,7 @@ int CaptureBitmapBits(UInt32 startBit, UInt32 bitCount)
 		if (SWAP_BE32(*currentWord) & bitMask) {
 			overlap = true;
 
-		//	printf("(3) overlapping file blocks! word: 0x%08x, mask: 0x%08x\n", *currentWord, bitMask);
+			//plog("(3) overlapping file blocks! word: 0x%08x, mask: 0x%08x\n", *currentWord, bitMask);
 		}
 		
 		*currentWord |= SWAP_BE32(bitMask);  /* set the bits in the bitmap */
@@ -577,7 +582,7 @@ int ReleaseBitmapBits(UInt32 startBit, UInt32 bitCount)
 		if ((SWAP_BE32(*currentWord) & bitMask) != bitMask) {
 			overlap = true;
 
-		//	printf("(1) overlapping file blocks! word: 0x%08x, mask: 0x%08x\n", *currentWord, bitMask);
+			//plog("(1) overlapping file blocks! word: 0x%08x, mask: 0x%08x\n", *currentWord, bitMask);
 		}
 		
 		*currentWord &= SWAP_BE32(~bitMask);  /* clear the bits in the bitmap */
@@ -609,7 +614,7 @@ int ReleaseBitmapBits(UInt32 startBit, UInt32 bitCount)
 		if ((SWAP_BE32(*currentWord) & bitMask) != bitMask) {
 			overlap = true;
 
-		//	printf("(2) overlapping file blocks! word: 0x%08x, mask: 0x%08x\n", *currentWord, bitMask);
+			//plog("(2) overlapping file blocks! word: 0x%08x, mask: 0x%08x\n", *currentWord, bitMask);
 		}
 		
 		*currentWord &= SWAP_BE32(~bitMask);  /* clear the bits in the bitmap */
@@ -639,7 +644,7 @@ int ReleaseBitmapBits(UInt32 startBit, UInt32 bitCount)
 		if ((SWAP_BE32(*currentWord) & bitMask) != bitMask) {
 			overlap = true;
 
-		//	printf("(3) overlapping file blocks! word: 0x%08x, mask: 0x%08x\n", *currentWord, bitMask);
+			//plog("(3) overlapping file blocks! word: 0x%08x, mask: 0x%08x\n", *currentWord, bitMask);
 		}
 		
 		*currentWord &= SWAP_BE32(~bitMask);  /* set the bits in the bitmap */
@@ -669,7 +674,7 @@ int CheckVolumeBitMap(SGlobPtr g, Boolean repair)
 {
 	UInt8 *vbmBlockP;
 	UInt32 *buffer;
-	UInt32 bit;
+	UInt64 bit;		/* 64-bit to avoid wrap around on volumes with 2^32 - 1 blocks */
 	UInt32 bitsWithinFileBlkMask;
 	UInt32 fileBlk;
 	BlockDescriptor block;
@@ -677,6 +682,7 @@ int CheckVolumeBitMap(SGlobPtr g, Boolean repair)
 	SFCB * fcb;
 	SVCB * vcb;
 	Boolean	 isHFSPlus;
+	Boolean foundOverAlloc = false;
 	int err = 0;
 	
 	vcb = g->calculatedVCB;
@@ -735,27 +741,81 @@ int CheckVolumeBitMap(SGlobPtr g, Boolean repair)
 			bcopy(buffer, vbmBlockP + (bit & bitsWithinFileBlkMask)/8, kBytesPerSegment);
 			relOpt = kForceWriteBlock;
 		} else {
+			int underalloc = 0;
+			int indx;
 #if _VBC_DEBUG_
-			int i;
+			int i, j;
+			UInt32 *disk_buffer;
+			UInt32 dummy, block_num;
 
-			printf("  disk buffer + %d\n", (bit & bitsWithinFileBlkMask)/8);
-			printf("  segment %d\nM ", bit / kBitsPerSegment);
+			plog("  disk buffer + %d\n", (bit & bitsWithinFileBlkMask)/8);
+			plog("start block number for segment = %qu\n", bit);
+			plog("segment %qd\n", bit / kBitsPerSegment);
+
+			plog("Memory:\n");
 			for (i = 0; i < kWordsPerSegment; ++i) {
-				printf("0x%08x ", buffer[i]);
+				plog("0x%08x ", buffer[i]);
 				if ((i & 0x7) == 0x7)
-					printf("\n  ");
+					plog("\n");
 			}
-			buffer = (UInt32*) (vbmBlockP + (bit & bitsWithinFileBlkMask)/8);
-			printf("\nD ");
+
+			disk_buffer = (UInt32*) (vbmBlockP + (bit & bitsWithinFileBlkMask)/8);
+			plog("Disk:\n");
 			for (i = 0; i < kWordsPerSegment; ++i) {
-				printf("0x%08x ", buffer[i]);
+				plog("0x%08x ", disk_buffer[i]);
 				if ((i & 0x7) == 0x7)
-					printf("\n  ");
+					plog("\n");
+			}
+
+			plog ("\n");
+			for (i = 0; i < kWordsPerSegment; ++i) {
+				/* Compare each word in the segment */
+				if (buffer[i] != disk_buffer[i]) {
+					dummy = 0x80000000;
+					/* If two words are different, compare each bit in the word */
+					for (j = 0; j < kBitsPerWord; ++j) {
+						/* If two bits are different, calculate allocation block number */
+						if ((buffer[i] & dummy) != (disk_buffer[i] & dummy)) {
+							block_num = bit + (i * kBitsPerWord) + j;
+							if (buffer[i] & dummy) {
+								plog ("Allocation block %u should be marked used on disk.\n", block_num);
+							} else {
+								plog ("Allocation block %u should be marked free on disk.\n", block_num);
+							}
+						}
+						dummy = dummy >> 1;
+					}
+				}
 			}
 #endif
-			PrintError(g, E_VBMDamaged, 0);
+			/*
+			 * We have at least one difference.  If we have over-allocated (that is, the
+			 * volume bitmap says a block is allocated, but our counts say it isn't), then
+			 * this is a lessor error.  If we've under-allocated (that is, the volume bitmap
+			 * says a block is available, but our counts say it is in use), then this is a
+			 * bigger problem -- it can lead to overlapping extents.
+			 *
+			 * Once we determine we have under-allocated, we can just stop and print out
+			 * the message.
+			 */
+			for (indx = 0; indx < kBytesPerSegment; indx++) {
+				uint8_t *bufp, *diskp;
+				bufp = (uint8_t *)buffer;
+				diskp = vbmBlockP + (bit & bitsWithinFileBlkMask)/8;
+				if (bufp[indx] & ~diskp[indx]) {
+					underalloc++;
+					break;
+				}
+			}
 			g->VIStat = g->VIStat | S_VBM;
-			break; /* stop checking after first miss */
+			if (underalloc) {
+				fsckPrint(g->context, E_VBMDamaged);
+				break; /* stop checking after first miss */
+			} else if (!foundOverAlloc) {
+				/* Only print out a message on the first find */
+				fsckPrint(g->context, E_VBMDamagedOverAlloc);
+				foundOverAlloc = true;
+			}
 		}
 		++g->itemsProcessed;
 	}
@@ -1022,6 +1082,203 @@ int AllocateContigBitmapBits (SVCB *vcb, UInt32 numBlocks, UInt32 *actualStartBl
 	return error;
 }
 
+#if !LINUX
+enum { kMaxTrimExtents = 256 };
+dk_extent_t gTrimExtents[kMaxTrimExtents];
+dk_unmap_t gTrimData;
+#endif
+
+static void TrimInit(void)
+{
+#if !LINUX
+	bzero(&gTrimData, sizeof(gTrimData));
+	gTrimData.extents = gTrimExtents;
+#endif
+}
+
+static void TrimFlush(void)
+{
+#if !LINUX
+	int err;
+	
+	if (gTrimData.extentsCount == 0)
+	{
+		dprintf(d_info|d_trim, "TrimFlush: nothing to flush\n");
+		return;	
+	}
+	
+	err = ioctl(fsreadfd, DKIOCUNMAP, &gTrimData);
+	if (err == -1)
+	{
+		dprintf(d_error|d_trim, "TrimFlush: error %d\n", errno);
+	}
+	gTrimData.extentsCount = 0;
+#endif
+}
+
+static void TrimExtent(SGlobPtr g, UInt32 startBlock, UInt32 blockCount)
+{
+#if !LINUX
+	UInt64 offset;
+	UInt64 length;
+	
+	dprintf(d_info|d_trim, "Trimming: startBlock=%10u, blockCount=%10u\n", startBlock, blockCount);
+
+	offset = (UInt64) startBlock * g->calculatedVCB->vcbBlockSize;
+	if (VolumeObjectIsHFSPlus())
+		offset += g->calculatedVCB->vcbEmbeddedOffset;
+	else
+		offset += g->calculatedVCB->vcbAlBlSt * 512ULL;
+	length = (UInt64) blockCount * g->calculatedVCB->vcbBlockSize;
+	
+	gTrimExtents[gTrimData.extentsCount].offset = offset;
+	gTrimExtents[gTrimData.extentsCount].length = length;
+	if (++gTrimData.extentsCount == kMaxTrimExtents)
+		TrimFlush();
+#endif
+}
+
+/* Function: TrimFreeBlocks
+ *
+ * Description: Find contiguous ranges of free allocation blocks (cleared bits
+ * in the bitmap) and issue DKIOCUNMAP requests to tell the underlying device
+ * that those blocks are not in use.  This allows the device to reclaim that
+ * space.
+ *
+ * Input:
+ *	g - global scavenger structure pointer
+ */
+void TrimFreeBlocks(SGlobPtr g)
+{
+#if !LINUX
+	UInt32 *buffer;
+	UInt32 bit;
+	UInt32 wordWithinSegment;
+	UInt32 bitWithinWordMask;
+	UInt32 currentWord;
+	UInt32 startBlock;
+	UInt32 blockCount;
+	UInt32 totalTrimmed = 0;
+	
+	TrimInit();
+	
+	/* We haven't seen any free blocks yet. */
+	startBlock = 0;
+	blockCount = 0;
+	
+	/* Loop through bitmap segments */
+	for (bit = 0; bit < gTotalBits; /* bit incremented below */) {
+		assert((bit % kBitsPerSegment) == 0);
+		
+		(void) GetSegmentBitmap(bit, &buffer, kTestingBits);
+
+		if (buffer == gFullBitmapSegment) {
+			/*
+			 * There are no free blocks in this segment, so trim any previous
+			 * extent (that ended at the end of the previous segment).
+			 */
+			if (blockCount != 0) {
+				TrimExtent(g, startBlock, blockCount);
+				totalTrimmed += blockCount;
+				blockCount = 0;
+			}
+			bit += kBitsPerSegment;
+			continue;
+		}
+		
+		if (buffer == gEmptyBitmapSegment) {
+			/*
+			 * This entire segment is free.  Add it to a previous extent, or
+			 * start a new one.
+			 */
+			if (blockCount == 0) {
+				startBlock = bit;
+			}
+			if (gTotalBits - bit < kBitsPerSegment) {
+				blockCount += gTotalBits - bit;
+			} else {
+				blockCount += kBitsPerSegment;
+			}
+			bit += kBitsPerSegment;
+			continue;
+		}
+		
+		/*
+		 * If we get here, the current segment has some free and some used
+		 * blocks, so we have to iterate over them.
+		 */
+		for (wordWithinSegment = 0;
+		     wordWithinSegment < kWordsPerSegment && bit < gTotalBits;
+		     ++wordWithinSegment)
+		{
+			assert((bit % kBitsPerWord) == 0);
+			
+			currentWord = SWAP_BE32(buffer[wordWithinSegment]);
+
+			/* Iterate over all the bits in the current word. */
+			for (bitWithinWordMask = kMSBBitSetInWord;
+			     bitWithinWordMask != 0 && bit < gTotalBits;
+			     ++bit, bitWithinWordMask >>= 1)
+			{
+				if (currentWord & bitWithinWordMask) {
+					/* Found a used block. */
+					if (blockCount != 0) {
+						TrimExtent(g, startBlock, blockCount);
+						totalTrimmed += blockCount;
+						blockCount = 0;
+					}
+				} else {
+					/*
+					 * Found an unused block.  Add it to the current extent,
+					 * or start a new one.
+					 */
+					if (blockCount == 0) {
+						startBlock = bit;
+					}
+					++blockCount;
+				}
+			}
+		}
+	}
+	if (blockCount != 0) {
+		TrimExtent(g, startBlock, blockCount);
+		totalTrimmed += blockCount;
+		blockCount = 0;
+	}
+	
+	TrimFlush();
+	dprintf(d_info|d_trim, "Trimmed %u allocation blocks.\n", totalTrimmed);
+#endif
+}
+
+/* Function: IsTrimSupported
+ *
+ * Description: Determine whether the device we're verifying/repairing suppports
+ * trimming (i.e., whether it supports DKIOCUNMAP).
+ *
+ * Result:
+ *	non-zero	Trim supported
+ *	zero		Trim not supported
+ */
+int IsTrimSupported(void)
+{
+#if LINUX
+	return 0;
+#else
+	int err;
+    uint32_t features = 0;
+	
+	err = ioctl(fsreadfd, DKIOCGETFEATURES, &features);
+	if (err < 0)
+	{
+		/* Can't tell if UNMAP is supported.  Assume no. */
+		return 0;
+	}
+	
+	return features & DK_FEATURE_UNMAP;
+#endif
+}
+
 /*
  * BITMAP SEGMENT TREE
  *
@@ -1050,7 +1307,7 @@ static int
 BMS_DisposeTree(void)
 {
 	while(gBMS_PoolCount > 0)
-		free(gBMS_PoolList[gBMS_PoolCount--]);
+		free(gBMS_PoolList[--gBMS_PoolCount]);
 
 	gBMS_Root = gBMS_FreeNodes = 0;
 	return (0);
@@ -1241,7 +1498,7 @@ BMS_PrintTree(BMS_Node * root)
 {
 	if (root) {
 		BMS_PrintTree(root->left);
-		printf("seg %d\n", root->segment);
+		plog("seg %d\n", root->segment);
 		BMS_PrintTree(root->right);
 	}
 }

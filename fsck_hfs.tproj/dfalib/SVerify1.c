@@ -1,23 +1,22 @@
 /*
- * Copyright (c) 1999-2006 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 1999-2009 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * "Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
- * Reserved.  This file contains Original Code and/or Modifications of
- * Original Code as defined in and that are subject to the Apple Public
- * Source License Version 1.0 (the 'License').  You may not use this file
- * except in compliance with the License.  Please obtain a copy of the
- * License at http://www.apple.com/publicsource and read it before using
- * this file.
+ * This file contains Original Code and/or Modifications of Original Code
+ * as defined in and that are subject to the Apple Public Source License
+ * Version 2.0 (the 'License'). You may not use this file except in
+ * compliance with the License. Please obtain a copy of the License at
+ * http://www.opensource.apple.com/apsl/ and read it before using this
+ * file.
  * 
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
- * License for the specific language governing rights and limitations
- * under the License."
+ * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
+ * Please see the License for the specific language governing rights and
+ * limitations under the License.
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
@@ -34,6 +33,23 @@
 
 #include "Scavenger.h"
 #include "../cache.h"
+#include <stdlib.h>
+#include <stddef.h>
+#include <unistd.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+
+#if !LINUX
+#include <libkern/OSByteOrder.h>
+#else
+#define XATTR_MAXNAMELEN 127
+#endif
+#define SW16(x)	OSSwapBigToHostInt16(x)
+#define	SW32(x)	OSSwapBigToHostInt32(x)
+#define	SW64(x)	OSSwapBigToHostInt64(x)
+
+extern int OpenDeviceByUUID(void *uuidp);
 
 //	internal routine prototypes
 
@@ -64,12 +80,26 @@ static int CompareExtentFileID(const void *first, const void *second);
 /*
  * Check if a volume is journaled.  
  *
- * returns:    	0 not journaled
+ * If journal_bit_only is true, the function only checks 
+ * if kHFSVolumeJournaledBit is set or not.  If the bit 
+ * is set, function returns 1 otherwise 0.
+ *
+ * If journal_bit_only is false, in addition to checking
+ * kHFSVolumeJournaledBit, the function also checks if the 
+ * last mounted version indicates failed journal replay, 
+ * or runtime corruption was detected or simply the volume 
+ * is not journaled and it was not unmounted cleanly.  
+ * If all of the above conditions are false and the journal
+ * bit is set, function returns 1 to indicate that the 
+ * volume is journaled truly otherwise returns 1 to fake
+ * that volume is not journaled.
+ *
+ * returns:    	0 not journaled or any of the above conditions are true
  *		1 journaled
  *
  */
 int
-CheckIfJournaled(SGlobPtr GPtr)
+CheckIfJournaled(SGlobPtr GPtr, Boolean journal_bit_only)
 {
 #define kIDSector 2
 
@@ -115,13 +145,17 @@ CheckIfJournaled(SGlobPtr GPtr)
 
 	if ((vhp != NULL) && (ValidVolumeHeader(vhp) == noErr)) {
 		result = ((vhp->attributes & kHFSVolumeJournaledMask) != 0);
+		if (journal_bit_only == true) {
+			goto out;
+		}
 
 		// even if journaling is enabled for this volume, we'll return
 		// false if it wasn't unmounted cleanly and it was previously
 		// mounted by someone that doesn't know about journaling.
 		// or if lastMountedVersion is kFSKMountVersion
 		if ( vhp->lastMountedVersion == kFSKMountVersion || 
-			((vhp->lastMountedVersion != kHFSJMountVersion) && 
+			(vhp->attributes & kHFSVolumeInconsistentMask) ||
+			((vhp->lastMountedVersion != kHFSJMountVersion) &&
 			(vhp->attributes & kHFSVolumeUnmountedMask) == 0)) {
 			result = 0;
 		}
@@ -129,101 +163,412 @@ CheckIfJournaled(SGlobPtr GPtr)
 		result = 0;
 	}
 
+out:
 	(void) ReleaseVolumeBlock(vcb, &block, rbOptions);
 
 	return (result);
 }
 
 /*
- * Check if a volume is clean (unmounted safely)
+ * Get the JournalInfoBlock from a volume.
  *
- * returns:    -1 not an HFS/HFS+ volume
- *		0 dirty
- *		1 clean
+ * It borrows code to get the volume header.  Note that it
+ * uses the primary volume header, not the alternate one.
+ * It returns 0 on success, or an error value.
+ * If requested, it will also set the block size (as a 32-bit
+ * value), via bsizep -- this is useful because the journal code
+ * needs to know the volume blocksize, but it doesn't necessarily
+ * have the header.
  *
- * if markClean is true and the volume is dirty it
- * will be marked clean on disk.
+ * Note also that it does direct reads, rather than going through
+ * the cache code.  This simplifies getting the JIB.
  */
-int
-CheckForClean(SGlobPtr GPtr, Boolean markClean)
+
+static OSErr
+GetJournalInfoBlock(SGlobPtr GPtr, JournalInfoBlock *jibp, UInt32 *bsizep)
 {
+#define kIDSector 2
+
 	OSErr err;
-	int result = -1;
+	int result = 0;
+	UInt32 jiBlk = 0;
 	HFSMasterDirectoryBlock	*mdbp;
 	HFSPlusVolumeHeader *vhp;
 	SVCB *vcb = GPtr->calculatedVCB;
-	VolumeObjectPtr myVOPtr;
 	ReleaseBlockOptions rbOptions;
-	UInt64			blockNum;
 	BlockDescriptor block;
+	size_t blockSize = 0;
+	off_t embeddedOffset = 0;
 
 	vhp = (HFSPlusVolumeHeader *) NULL;
 	rbOptions = kReleaseBlock;
-	myVOPtr = GetVolumeObjectPtr( );
-	block.buffer = NULL;
+
+	if (jibp == NULL)
+		return paramErr;
+
+	err = GetVolumeBlock(vcb, kIDSector, kGetBlock, &block);
+	if (err) return (err);
+
+	mdbp = (HFSMasterDirectoryBlock	*) block.buffer;
+
+	if (mdbp->drSigWord == kHFSPlusSigWord || mdbp->drSigWord == kHFSXSigWord) {
+		vhp = (HFSPlusVolumeHeader *) block.buffer;
+
+	} else if (mdbp->drSigWord == kHFSSigWord) {
+
+		if (mdbp->drEmbedSigWord == kHFSPlusSigWord) {
+			UInt32 vhSector;
+			UInt32 blkSectors;
+			
+			blkSectors = mdbp->drAlBlkSiz / 512;
+			vhSector  = mdbp->drAlBlSt;
+			vhSector += blkSectors * mdbp->drEmbedExtent.startBlock;
+			vhSector += kIDSector;
 	
-	GetVolumeObjectBlockNum( &blockNum );
-	if ( blockNum == 0 ) {
-		if ( GPtr->logLevel >= kDebugLog )
-			printf( "\t%s - unknown volume type \n", __FUNCTION__ );
-		return (-1);
+			embeddedOffset = (mdbp->drEmbedExtent.startBlock * mdbp->drAlBlkSiz) + (mdbp->drAlBlSt * Blk_Size);
+			if (debug)
+				plog("Embedded offset is %lld\n", embeddedOffset);
+
+			(void) ReleaseVolumeBlock(vcb, &block, kReleaseBlock);
+			err = GetVolumeBlock(vcb, vhSector, kGetBlock, &block);
+			if (err) return (err);
+
+			vhp = (HFSPlusVolumeHeader *) block.buffer;
+			mdbp = (HFSMasterDirectoryBlock	*) NULL;
+
+		}
+	}
+
+	if (vhp == NULL) {
+		result = paramErr;
+		goto out;
+	}
+	if ((err = ValidVolumeHeader(vhp)) != noErr) {
+		result = err;
+		goto out;
+	}
+
+	// journalInfoBlock is not automatically swapped
+	jiBlk = SW32(vhp->journalInfoBlock);
+	blockSize = vhp->blockSize;
+	(void)ReleaseVolumeBlock(vcb, &block, rbOptions);
+
+	if (jiBlk) {
+		int jfd = GPtr->DrvNum;
+		uint8_t block[blockSize];
+		ssize_t nread;
+
+		nread = pread(jfd, block, blockSize, (off_t)jiBlk * blockSize + embeddedOffset);
+		if (nread == blockSize) {
+			if (jibp)
+				memcpy(jibp, block, sizeof(JournalInfoBlock));
+			if (bsizep)
+				*bsizep = blockSize;
+			result = 0;
+		} else {
+			if (debug) {
+				plog("%s: Tried to read JIB, got %zd\n", __FUNCTION__, nread);
+				result = EINVAL;
+			}
+		}
+	}
+
+out:
+	return (result);
+}
+
+/*
+ * Journal checksum calculation, taken directly from TN1150.
+ */
+static int
+calc_checksum(unsigned char *ptr, int len)
+{
+    int i, cksum=0;
+
+    for(i=0; i < len; i++, ptr++) {
+        cksum = (cksum << 8) ^ (cksum + *ptr);
+    }
+
+    return (~cksum);
+}
+
+/*
+ * The journal_header structure is not defined in <hfs/hfs_format.h>;
+ * it's described in TN1150.  It is on disk in the endian mode that was
+ * used to write it, so we may or may not need to swap the fields.
+ */
+typedef struct journal_header {
+	UInt32    magic;
+	UInt32    endian;
+	UInt64    start;
+	UInt64    end;
+	UInt64    size;
+	UInt32    blhdr_size;
+	UInt32    checksum;
+	UInt32    jhdr_size;
+	UInt32    sequence_num;
+} journal_header;
+
+#define JOURNAL_HEADER_MAGIC  0x4a4e4c78
+#define ENDIAN_MAGIC          0x12345678
+#define JOURNAL_HEADER_CKSUM_SIZE  (offsetof(struct journal_header, sequence_num))
+
+/*
+ * Determine of a journal is empty.
+ * This code can use an in-filesystem, or external, journal.
+ * In general, it returns 0 if the journal exists, and appears to
+ * be non-empty (that is, start and end in the journal header are
+ * the same); it will return 1 if it exists and is empty, or if
+ * there was a problem getting the journal.  (This behaviour was
+ * chosen because it mimics the existing behaviour of fsck_hfs,
+ * which has traditionally done nothing with the journal.  Future
+ * versions may be more demanding.)
+ */
+int
+IsJournalEmpty(SGlobPtr GPtr)
+{
+	int retval = 1;
+	OSErr result;
+	OSErr err = 0;
+	JournalInfoBlock jib;
+	UInt32 bsize;
+
+	result = GetJournalInfoBlock(GPtr, &jib, &bsize);
+	if (result == 0) {
+	/* jib is not byte swapped */
+		/* If the journal needs to be initialized, it's empty. */
+		if ((SW32(jib.flags) & kJIJournalNeedInitMask) == 0) {
+			off_t hdrOffset = SW64(jib.offset);
+			struct journal_header *jhdr;
+			uint8_t block[bsize];
+			ssize_t nread;
+			int jfd = -1;
+
+			/* If it's an external journal, kJIJournalInSFMask will not be set */
+			if (SW32(jib.flags) & kJIJournalInFSMask)
+				jfd = dup(GPtr->DrvNum);
+			else {
+				if (debug)
+					plog("External Journal device\n - unsupported");
+#if LINUX
+				goto out;
+#endif
+				jfd = OpenDeviceByUUID(&jib.ext_jnl_uuid);
+			}
+
+			if (jfd == -1) {
+				if (debug) {
+					plog("Unable to get journal file descriptor, journal flags = %#x\n", SW32(jib.flags));
+				}
+				goto out;
+			}
+			nread = pread(jfd, block, bsize, hdrOffset);
+			if (nread == -1) {
+				if (debug) {
+					plog("Could not read journal from descriptor %d: %s", jfd, strerror(errno));
+				}
+				err = errno;
+			} else if (nread != bsize) {
+				if (debug) {
+					plog("Only read %zd bytes from journal (expected %zd)", nread, bsize);
+					err = EINVAL;
+				}
+			}
+			close(jfd);
+			/* We got the journal header, now we need to check it */
+			if (err == noErr) {
+				int swap = 0;
+				UInt32 cksum = 0;
+
+				jhdr = (struct journal_header*)block;
+
+				if (jhdr->magic == JOURNAL_HEADER_MAGIC ||
+					SW32(jhdr->magic) == JOURNAL_HEADER_MAGIC) {
+					if (jhdr->endian == ENDIAN_MAGIC)
+						swap = 0;
+					else if (SW32(jhdr->endian) == ENDIAN_MAGIC)
+						swap = 1;
+					else
+						swap = 2;
+
+					if (swap != 2) {
+						cksum = swap ? SW32(jhdr->checksum) : jhdr->checksum;
+						UInt32 calc_sum;
+						jhdr->checksum = 0;
+						/* Checksum calculation needs the checksum field to be zero. */
+						calc_sum = calc_checksum((unsigned char*)jhdr, JOURNAL_HEADER_CKSUM_SIZE);
+						/* But, for now, this is for debugging purposes only */
+						if (calc_sum != cksum) {
+							if (debug)
+								plog("Journal checksum doesn't match:  orig %x != calc %x\n", cksum, calc_sum);
+						}
+						/* We have a journal, we got the header, now we check the start and end */
+						if (jhdr->start != jhdr->end) {
+							retval = 0;
+							if (debug)
+								plog("Non-empty journal:  start = %lld, end = %lld\n",
+									swap ? SW64(jhdr->start) : jhdr->start,
+									swap ? SW64(jhdr->end) : jhdr->end);
+						}
+					}
+				}
+			}
+		}
+	}
+out:
+	return retval;
+}
+
+/*
+ * The functions checks whether the volume is clean or dirty.  It 
+ * also marks the volume as clean/dirty depending on the type 
+ * of operation specified.  It modifies the volume header only 
+ * if the old values are not same as the new values.  If the volume 
+ * header is updated, it also sets the last mounted version for HFS+.
+ * 
+ * Input:
+ * GPtr		- Pointer to scavenger global area
+ * operation	- Type of operation to perform
+ * 			kCheckVolume,		// check if volume is clean/dirty
+ *			kMarkVolumeDirty,	// mark the volume dirty
+ *			kMarkVolumeClean	// mark the volume clean
+ *
+ * Output:
+ * modified 	- true if the VH/MDB was modified, otherwise false.
+ * Return Value - 	
+ *			-1 - if the volume is not an HFS/HFS+ volume
+ *	 		 0 - if the volume was dirty or marked dirty
+ *	 		 1 - if the volume was clean or marked clean
+ * If the operation requested was to mark the volume clean/dirty,
+ * the return value is dependent on type of operation (described above).
+ */
+int CheckForClean(SGlobPtr GPtr, UInt8 operation, Boolean *modified)
+{
+	enum { unknownVolume = -1, cleanUnmount = 1, dirtyUnmount = 0};
+	int result = unknownVolume;
+	Boolean update = false;
+	HFSMasterDirectoryBlock	*mdbp;
+	HFSPlusVolumeHeader *vhp;
+	BlockDescriptor block;
+	ReleaseBlockOptions rbOptions;
+	UInt64 blockNum;
+	SVCB *vcb;
+	
+	*modified = false;
+	vcb = GPtr->calculatedVCB;
+	block.buffer = NULL;
+	rbOptions = kReleaseBlock;
+	
+	/* Get the block number for VH/MDB */
+	GetVolumeObjectBlockNum(&blockNum);
+	if (blockNum == 0) {
+		if (fsckGetVerbosity(GPtr->context) >= kDebugLog)
+			plog( "\t%s - unknown volume type \n", __FUNCTION__ );
+		goto ExitThisRoutine;
 	}
 	
-	// get the VHB or MDB (depending on type of volume)
-	err = GetVolumeObjectPrimaryBlock( &block );
-	if (err) {
-		if ( GPtr->logLevel >= kDebugLog )
-			printf( "\t%s - could not get VHB/MDB at block %qd \n", __FUNCTION__, blockNum );
-		err = -1;
+	/* Get VH or MDB depending on the type of volume */
+	result = GetVolumeObjectPrimaryBlock(&block);
+	if (result) {
+		if ( fsckGetVerbosity(GPtr->context) >= kDebugLog )
+			plog( "\t%s - could not get VHB/MDB at block %qd \n", __FUNCTION__, blockNum );
+		result = unknownVolume;
 		goto ExitThisRoutine;
 	}
 
-	if ( VolumeObjectIsHFSPlus( ) ) {
+	result = cleanUnmount;
+
+	if (VolumeObjectIsHFSPlus()) {
 		vhp = (HFSPlusVolumeHeader *) block.buffer;
 		
-		result = 1;  // clean unmount
-		if ( ((vhp->attributes & kHFSVolumeUnmountedMask) == 0) )
-			result = 0;  // dirty unmount
+		/* Check unmount bit and volume inconsistent bit */
+		if (((vhp->attributes & kHFSVolumeUnmountedMask) == 0) || 
+		    (vhp->attributes & kHFSVolumeInconsistentMask))
+			result = dirtyUnmount;
 
-		// if we are to mark volume clean and lastMountedVersion shows journaled we invalidate
-		// the journal by setting lastMountedVersion to 'fsck'
-		if ( markClean && ((vhp->lastMountedVersion == kHFSJMountVersion) || 
-						   (vhp->lastMountedVersion == kFSKMountVersion)) ) {
-			result = 0;  // force dirty unmount path
-			vhp->lastMountedVersion = kFSCKMountVersion;
-		}
-		
+		/* Check last mounted version.  If kFSKMountVersion, bad 
+		 * journal was encountered during mount.  Force dirty volume.
+		 */
+
 		if (vhp->lastMountedVersion == kFSKMountVersion) {
 			GPtr->JStat |= S_BadJournal;
-			if ( GPtr->logLevel >= kDebugLog ) 
-				printf ("\t%s - found bad journal signature \n", __FUNCTION__);
-			/* XXX This is not correct error code for bad journal.  
-			 * E_InvalidVolumeHeader is negative error.  Change ErrCode
-			 * to non-negative, else it might indicate non-fixable error
-			 * in scavenge process 
-			 */
-			RcdError (GPtr, E_InvalidVolumeHeader);
-			GPtr->ErrCode = -E_InvalidVolumeHeader;
-			result = 0;	//dirty unmount
+			RcdError (GPtr, E_BadJournal);
+			result = dirtyUnmount;
 		}
-		
-		if ( markClean && (result == 0) ) {
-			vhp->attributes |= kHFSVolumeUnmountedMask;
-			rbOptions = kForceWriteBlock;
+
+		if (operation == kMarkVolumeDirty) {
+			/* Mark volume was not unmounted cleanly */
+			if (vhp->attributes & kHFSVolumeUnmountedMask) {
+				vhp->attributes &= ~kHFSVolumeUnmountedMask;
+				update = true;
+			} 
+			/* Mark volume inconsistent */
+			if ((vhp->attributes & kHFSVolumeInconsistentMask) == 0) {
+				vhp->attributes |= kHFSVolumeInconsistentMask;
+				update = true;
+			}
+		} else if (operation == kMarkVolumeClean) {
+			/* Mark volume was unmounted cleanly */
+			if ((vhp->attributes & kHFSVolumeUnmountedMask) == 0)  {
+				vhp->attributes |= kHFSVolumeUnmountedMask;
+				update = true;
+			} 
+			/* Mark volume consistent */
+			if (vhp->attributes & kHFSVolumeInconsistentMask) {
+				vhp->attributes &= ~kHFSVolumeInconsistentMask;
+				update = true;
+			}
 		}
-	}
-	else if ( VolumeObjectIsHFS( ) ) {
+
+		/* If any changes to VH, update the last mounted version */
+		if (update == true) {
+			vhp->lastMountedVersion = kFSCKMountVersion;
+		}
+	} else if (VolumeObjectIsHFS()) {
 		mdbp = (HFSMasterDirectoryBlock	*) block.buffer;
 		
-		result = (mdbp->drAtrb & kHFSVolumeUnmountedMask) != 0;
-		if (markClean && (result == 0)) {
-			mdbp->drAtrb |= kHFSVolumeUnmountedMask;
-			rbOptions = kForceWriteBlock;
+		/* Check unmount bit and volume inconsistent bit */
+		if (((mdbp->drAtrb & kHFSVolumeUnmountedMask) == 0) || 
+		    (mdbp->drAtrb & kHFSVolumeInconsistentMask))
+			result = dirtyUnmount;
+
+		if (operation == kMarkVolumeDirty) {
+			/* Mark volume was not unmounted cleanly */
+			if (mdbp->drAtrb & kHFSVolumeUnmountedMask) {
+				mdbp->drAtrb &= ~kHFSVolumeUnmountedMask;
+				update = true;
+			} 
+			/* Mark volume inconsistent */
+			if ((mdbp->drAtrb & kHFSVolumeInconsistentMask) == 0) {
+				mdbp->drAtrb |= kHFSVolumeInconsistentMask;
+				update = true;
+			}
+		} else if (operation == kMarkVolumeClean) {
+			/* Mark volume was unmounted cleanly */
+			if ((mdbp->drAtrb & kHFSVolumeUnmountedMask) == 0)  {
+				mdbp->drAtrb |= kHFSVolumeUnmountedMask;
+				update = true;
+			} 
+			/* Mark volume consistent */
+			if (mdbp->drAtrb & kHFSVolumeInconsistentMask) {
+				mdbp->drAtrb &= ~kHFSVolumeInconsistentMask;
+				update = true;
+			}
 		}
 	}
 
 ExitThisRoutine:
-	if ( block.buffer != NULL )
+	if (update == true) {
+		*modified = true;
+		rbOptions = kForceWriteBlock;
+		/* Set appropriate return value */
+		if (operation == kMarkVolumeDirty) {
+			result = dirtyUnmount;
+		} else if (operation == kMarkVolumeClean) {
+			result = cleanUnmount;
+		}
+	}
+	if (block.buffer != NULL)
 		(void) ReleaseVolumeBlock(vcb, &block, rbOptions);
 
 	return (result);
@@ -274,16 +619,16 @@ OSErr IVChk( SGlobPtr GPtr )
 		
 	// check volume size
 	if ( myVOPtr->totalDeviceSectors < 3 ) {
-		if ( GPtr->logLevel >= kDebugLog )
-			printf("\tinvalid device information for volume - total sectors = %qd sector size = %d \n",
+		if ( fsckGetVerbosity(GPtr->context) >= kDebugLog )
+			plog("\tinvalid device information for volume - total sectors = %qd sector size = %d \n",
 				myVOPtr->totalDeviceSectors, myVOPtr->sectorSize);
 		return( 123 );
 	}
 	
 	GetVolumeObjectBlockNum( &blockNum );
 	if ( blockNum == 0 || myVOPtr->volumeType == kUnknownVolumeType ) {
-		if ( GPtr->logLevel >= kDebugLog )
-			printf( "\t%s - unknown volume type \n", __FUNCTION__ );
+		if ( fsckGetVerbosity(GPtr->context) >= kDebugLog )
+			plog( "\t%s - unknown volume type \n", __FUNCTION__ );
 		err = R_BadSig;  /* doesn't bear the HFS signature */
 		goto ReleaseAndBail;
 	}
@@ -291,8 +636,8 @@ OSErr IVChk( SGlobPtr GPtr )
 	// get Volume Header (HFS+) or Master Directory (HFS) block
 	err = GetVolumeObjectVHBorMDB( &myBlockDescriptor );
 	if ( err != noErr ) {
-		if ( GPtr->logLevel >= kDebugLog )
-			printf( "\t%s - bad volume header - err %d \n", __FUNCTION__, err );
+		if ( fsckGetVerbosity(GPtr->context) >= kDebugLog )
+			plog( "\t%s - bad volume header - err %d \n", __FUNCTION__, err );
 		goto ReleaseAndBail;
 	}
 	myMDBPtr = (HFSMasterDirectoryBlock	*) myBlockDescriptor.buffer;
@@ -317,8 +662,8 @@ OSErr IVChk( SGlobPtr GPtr )
 			myMDBPtr = NULL;
 			err = GetVolumeObjectVHB( &myBlockDescriptor );
 			if ( err != noErr ) {
-				if ( GPtr->logLevel >= kDebugLog )
-					printf( "\t%s - bad volume header - err %d \n", __FUNCTION__, err );
+				if ( fsckGetVerbosity(GPtr->context) >= kDebugLog )
+					plog( "\t%s - bad volume header - err %d \n", __FUNCTION__, err );
 				WriteError( GPtr, E_InvalidVolumeHeader, 1, 0 );
 				err = E_InvalidVolumeHeader;
 				goto ReleaseAndBail;
@@ -327,8 +672,8 @@ OSErr IVChk( SGlobPtr GPtr )
 			GetVolumeObjectBlockNum( &blockNum ); // get the new Volume header block number
 		}
 		else {
-			if ( GPtr->logLevel >= kDebugLog )
-				printf( "\t%s - bad volume header - err %d \n", __FUNCTION__, err );
+			if ( fsckGetVerbosity(GPtr->context) >= kDebugLog )
+				plog( "\t%s - bad volume header - err %d \n", __FUNCTION__, err );
 			WriteError( GPtr, E_InvalidVolumeHeader, 1, 0 );
 			err = E_InvalidVolumeHeader;
 			goto ReleaseAndBail;
@@ -341,7 +686,11 @@ OSErr IVChk( SGlobPtr GPtr )
 	if ( VolumeObjectIsHFSPlus( ) ) {
 
 		myVHBPtr = (HFSPlusVolumeHeader	*) myBlockDescriptor.buffer;
-		WriteMsg( GPtr, M_CheckingHFSPlusVolume, kStatusMessage );
+		if (myVHBPtr->attributes & kHFSVolumeJournaledMask) {
+			fsckPrint(GPtr->context, hfsJournalVolCheck);
+		} else {
+			fsckPrint(GPtr->context, hfsCheckNoJnl);
+		}
 		GPtr->numExtents = kHFSPlusExtentDensity;
 		vcb->vcbSignature = kHFSPlusSigWord;
 
@@ -368,9 +717,9 @@ OSErr IVChk( SGlobPtr GPtr )
 		if ( myVHBPtr->totalBlocks > numABlks ) {
 			RcdError( GPtr, E_NABlks );
 			err = E_NABlks;					
-			if ( GPtr->logLevel >= kDebugLog ) {
-				printf( "\t%s - volume header total allocation blocks is greater than device size \n", __FUNCTION__ );
-				printf( "\tvolume allocation block count %d device allocation block count %d \n", 
+			if ( fsckGetVerbosity(GPtr->context) >= kDebugLog ) {
+				plog( "\t%s - volume header total allocation blocks is greater than device size \n", __FUNCTION__ );
+				plog( "\tvolume allocation block count %d device allocation block count %d \n", 
 						myVHBPtr->totalBlocks, numABlks );
 			}
 			goto ReleaseAndBail;
@@ -378,7 +727,9 @@ OSErr IVChk( SGlobPtr GPtr )
 	}
 	else if ( VolumeObjectIsHFS( ) ) {
 
-		WriteMsg( GPtr, M_CheckingHFSVolume, kStatusMessage );
+//		fsckPrint(GPtr->context, fsckCheckingVolume);
+		fsckPrint(GPtr->context, hfsCheckHFS);
+
 		GPtr->numExtents			= kHFSExtentDensity;
 		vcb->vcbSignature			= myMDBPtr->drSigWord;
 		maxNumberOfAllocationBlocks	= 0xFFFF;
@@ -687,6 +1038,8 @@ OSErr	CreateExtentsBTreeControlBlock( SGlobPtr GPtr )
 		{
 			RcdError( GPtr, E_ExtPEOF );
 			err = E_ExtPEOF;
+			if (debug)
+				plog("Extents File totalBlocks = %u, numABlks = %u\n", volumeHeader->extentsFile.totalBlocks, numABlks);
 			goto exit;
 		}
 		else
@@ -748,6 +1101,8 @@ OSErr	CreateExtentsBTreeControlBlock( SGlobPtr GPtr )
 		{
 			RcdError(GPtr,E_ExtPEOF);
 			err = E_ExtPEOF;
+			if (debug)
+				plog("Alternate MDB drXTFlSize = %llu, should be %llu\n", (long long)alternateMDB->drXTFlSize, (long long)numABlks * (UInt64)GPtr->calculatedVCB->vcbBlockSize);
 			goto exit;
 		}
 		else
@@ -789,8 +1144,8 @@ OSErr	CreateExtentsBTreeControlBlock( SGlobPtr GPtr )
 	//
 	//	set up our DFA extended BTCB area.  Will we have enough memory on all HFS+ volumes.
 	//
-	btcb->refCon = (UInt32) AllocateClearMemory( sizeof(BTreeExtensionsRec) );			// allocate space for our BTCB extensions
-	if ( btcb->refCon == (UInt32) nil ) {
+	btcb->refCon = AllocateClearMemory( sizeof(BTreeExtensionsRec) );			// allocate space for our BTCB extensions
+	if ( btcb->refCon ==  nil ) {
 		err = R_NoMem;
 		goto exit;
 	}
@@ -840,6 +1195,7 @@ static	OSErr	CheckNodesFirstOffset( SGlobPtr GPtr, BTreeControlBlock *btcb )
 			 (offset & 1) ||									// offset is odd
 			 (offset >= btcb->nodeSize) )						// offset beyond end of node
 		{
+			if (debug) fprintf(stderr, "%s(%d):  offset is wrong\n", __FUNCTION__, __LINE__);
 			err	= fsBTInvalidNodeErr;
 		}
 	}
@@ -889,6 +1245,12 @@ OSErr ExtBTChk( SGlobPtr GPtr )
 	err = BTMapChk( GPtr, kCalculatedExtentRefNum );
 	ReturnIfError( err );														//	Invalid extent BTree map
 
+	//
+	// Make sure unused nodes in the B-tree are zero filled.
+	//
+	err = BTCheckUnusedNodes(GPtr, kCalculatedExtentRefNum, &GPtr->EBTStat);
+	ReturnIfError( err );
+	
 	//
 	//	compare BTree header record on disk with scavenger's BTree header record 
 	//
@@ -1050,7 +1412,7 @@ OSErr	CreateCatalogBTreeControlBlock( SGlobPtr GPtr )
 		if (header.keyCompareType == kHFSBinaryCompare)
 		{
 			btcb->keyCompareProc = (void *)CaseSensitiveCatalogKeyCompare;
-			PrintStatus(GPtr, M_CaseSensitive, 0);
+			fsckPrint(GPtr->context, hfsCaseSensitive);
 		}
 		else
 		{
@@ -1132,7 +1494,7 @@ OSErr	CreateCatalogBTreeControlBlock( SGlobPtr GPtr )
 		if (err) goto exit;
 	}
 #if 0	
-	printf("   Catalog B-tree is %qd bytes\n", (UInt64)btcb->totalNodes * (UInt64) btcb->nodeSize);
+	plog("   Catalog B-tree is %qd bytes\n", (UInt64)btcb->totalNodes * (UInt64) btcb->nodeSize);
 #endif
 
 	if ( header.btreeType != kHFSBTreeType )
@@ -1144,8 +1506,8 @@ OSErr	CreateCatalogBTreeControlBlock( SGlobPtr GPtr )
 	//	set up our DFA extended BTCB area.  Will we have enough memory on all HFS+ volumes.
 	//
 
-	btcb->refCon = (UInt32) AllocateClearMemory( sizeof(BTreeExtensionsRec) );			// allocate space for our BTCB extensions
-	if ( btcb->refCon == (UInt32)nil ) {
+	btcb->refCon = AllocateClearMemory( sizeof(BTreeExtensionsRec) );			// allocate space for our BTCB extensions
+	if ( btcb->refCon == nil ) {
 		err = R_NoMem;
 		goto exit;
 	}
@@ -1175,7 +1537,7 @@ OSErr	CreateCatalogBTreeControlBlock( SGlobPtr GPtr )
                 HFSPlusCatalogThread *		recPtr = &record.hfsPlusThread;
                 (void) utf_encodestr( recPtr->nodeName.unicode,
                                       recPtr->nodeName.length * 2,
-                                      GPtr->volumeName, &len );
+                                      GPtr->volumeName, &len, sizeof(GPtr->volumeName) );
                 GPtr->volumeName[len] = '\0';
             }
             else {
@@ -1183,6 +1545,7 @@ OSErr	CreateCatalogBTreeControlBlock( SGlobPtr GPtr )
                 bcopy( &recPtr->nodeName[1], GPtr->volumeName, recPtr->nodeName[0] );
                 GPtr->volumeName[ recPtr->nodeName[0] ] = '\0';
            }
+		   fsckPrint(GPtr->context, fsckVolumeName, GPtr->volumeName);
         }
     }
 
@@ -1351,7 +1714,7 @@ OSErr CatHChk( SGlobPtr GPtr )
 	}
 	
 	GPtr->DirLevel    = 1;
-	dprP              = &(*GPtr->DirPTPtr)[0];					
+	dprP              = &(GPtr->DirPTPtr)[0];
 	dprP->directoryID = 1;
 
 	dirCnt = filCnt = rtdirCnt = rtfilCnt = 0;
@@ -1364,7 +1727,7 @@ OSErr CatHChk( SGlobPtr GPtr )
 	//
 	while ( (GPtr->DirLevel > 0) && (result == noErr) )
 	{
-		dprP = &(*GPtr->DirPTPtr)[GPtr->DirLevel -1];
+		dprP = &(GPtr->DirPTPtr)[GPtr->DirLevel - 1];
 		
 		validKeyFound = true;
 		record.recordType = 0;
@@ -1417,13 +1780,22 @@ OSErr CatHChk( SGlobPtr GPtr )
 				if ( dprP->directoryID == kHFSRootFolderID )				//	bump root dir count 
 					rtdirCnt++;
 
-				if ( GPtr->DirLevel > CMMaxDepth )
+				if ( GPtr->DirLevel > GPtr->dirPathCount )
 				{
-					RcdError(GPtr,E_CatDepth);								//	error, exceeded max catalog depth
-					return noErr;											//	abort this check, but let other checks proceed
+					void *ptr;
+
+					ptr = realloc(GPtr->DirPTPtr, (GPtr->dirPathCount + CMMaxDepth) * sizeof(SDPR));
+					if (ptr == nil)
+					{
+						fsckPrint(GPtr->context, E_CatDepth, GPtr->dirPathCount);
+						return noErr;											/* abort this check, but let other checks proceed */
+					}
+					ClearMemory((char *)ptr + (GPtr->dirPathCount * sizeof(SDPR)), (CMMaxDepth * sizeof(SDPR)));
+					GPtr->dirPathCount += CMMaxDepth;
+					GPtr->DirPTPtr = ptr;
 				}
 
-				dprP = &(*GPtr->DirPTPtr)[GPtr->DirLevel -1];
+				dprP = &(GPtr->DirPTPtr)[GPtr->DirLevel - 1];
 				dprP->directoryID		= largeCatalogFolderP->folderID;
 				dprP->offspringIndex	= 1;
 				dprP->directoryHint		= hint;
@@ -1432,7 +1804,7 @@ OSErr CatHChk( SGlobPtr GPtr )
 
 				for ( i = 1; i < GPtr->DirLevel; i++ )
 				{
-					dprP1 = &(*GPtr->DirPTPtr)[i -1];
+					dprP1 = &(GPtr->DirPTPtr)[i - 1];
 					if (dprP->directoryID == dprP1->directoryID)
 					{
 						RcdError( GPtr,E_DirLoop );							//	loop in directory hierarchy 
@@ -1446,12 +1818,10 @@ OSErr CatHChk( SGlobPtr GPtr )
 				BuildCatalogKey( dprP->directoryID, (const CatalogName *) nil, isHFSPlus, &key );
 				result = SearchBTreeRecord( GPtr->calculatedCatalogFCB, &key, kNoHint, &foundKey, &threadRecord, &recSize, &hint );
 				if ( result != noErr ) {
-					char idStr[16];
 					struct MissingThread *mtp;
 					
 					/* Report the error */
-					sprintf(idStr, "%d", dprP->directoryID);
-					PrintError(GPtr, E_NoThd, 1, idStr);
+					fsckPrint(GPtr->context, E_NoThd, dprP->directoryID);
 					
 					/* HFS will exit here */
 					if ( !isHFSPlus )
@@ -1522,13 +1892,22 @@ OSErr CatHChk( SGlobPtr GPtr )
 				if (dprP->directoryID == kHFSRootFolderID)					/* bump root dir count */
 					rtdirCnt++;
 
-				if (GPtr->DirLevel > CMMaxDepth)
+				if ( GPtr->DirLevel > GPtr->dirPathCount )
 				{
-					RcdError(GPtr,E_CatDepth);								/* error, exceeded max catalog depth */
-					return noErr;											/* abort this check, but let other checks proceed */
-				}
+					void *ptr;
 
-				dprP = &(*GPtr->DirPTPtr)[GPtr->DirLevel -1];			
+					ptr = realloc(GPtr->DirPTPtr, (GPtr->dirPathCount + CMMaxDepth) * sizeof(SDPR));
+					if (ptr == nil)
+					{
+						fsckPrint(GPtr->context, E_CatDepth, GPtr->dirPathCount);
+						return noErr;											/* abort this check, but let other checks proceed */
+					}
+					ClearMemory((char *)ptr + (GPtr->dirPathCount * sizeof(SDPR)), (CMMaxDepth * sizeof(SDPR)));
+					GPtr->dirPathCount += CMMaxDepth;
+					GPtr->DirPTPtr = ptr;
+				}
+				
+				dprP = &(GPtr->DirPTPtr)[GPtr->DirLevel - 1];
 				dprP->directoryID		= smallCatalogFolderP->folderID;
 				dprP->offspringIndex	= 1;
 				dprP->directoryHint		= hint;
@@ -1538,7 +1917,7 @@ OSErr CatHChk( SGlobPtr GPtr )
 
 				for (i = 1; i < GPtr->DirLevel; i++)
 				{
-					dprP1 = &(*GPtr->DirPTPtr)[i -1];
+					dprP1 = &(GPtr->DirPTPtr)[i - 1];
 					if (dprP->directoryID == dprP1->directoryID)
 					{
 						RcdError( GPtr,E_DirLoop );				/* loop in directory hierarchy */
@@ -1617,7 +1996,7 @@ resumeAtParent:
 			
 			if(GPtr->DirLevel > 0)
 			{										
-				dprP = &(*GPtr->DirPTPtr)[GPtr->DirLevel -1];
+				dprP = &(GPtr->DirPTPtr)[GPtr->DirLevel - 1];
 				GPtr->TarID	= dprP->directoryID;					/* target ID = current directory ID */
 				GPtr->CNType = record.recordType;					/* target CNode type = directory */
 				CopyCatalogName( (const CatalogName *) &dprP->directoryName, &GPtr->CName, isHFSPlus );
@@ -1779,8 +2158,8 @@ OSErr	CreateAttributesBTreeControlBlock( SGlobPtr GPtr )
 	//
 	//	set up our DFA extended BTCB area.  Will we have enough memory on all HFS+ volumes.
 	//
-	btcb->refCon = (UInt32) AllocateClearMemory( sizeof(BTreeExtensionsRec) );			// allocate space for our BTCB extensions
-	if ( btcb->refCon == (UInt32)nil ) {
+	btcb->refCon = AllocateClearMemory( sizeof(BTreeExtensionsRec) );			// allocate space for our BTCB extensions
+	if ( btcb->refCon == nil ) {
 		err = R_NoMem;
 		goto exit;
 	}
@@ -1793,7 +2172,7 @@ OSErr	CreateAttributesBTreeControlBlock( SGlobPtr GPtr )
 	}
 	else
 	{
-		if ( btcb->refCon == (UInt32)nil ) {
+		if ( btcb->refCon == nil ) {
 			err = R_NoMem;
 			goto exit;
 		}
@@ -2024,7 +2403,7 @@ CheckAttributeRecord(SGlobPtr GPtr, const HFSPlusAttrKey *key, const HFSPlusAttr
 	prevAttr = &(GPtr->lastAttrInfo);
 	fileID = key->fileID;
 	/* Convert unicode attribute name to UTF-8 string */
-	(void) utf_encodestr(key->attrName, key->attrNameLen * 2, attrname, &attrlen);
+	(void) utf_encodestr(key->attrName, key->attrNameLen * 2, attrname, &attrlen, sizeof(attrname));
 	attrname[attrlen] = '\0';
 
 	/* Compare the current attribute to last attribute seen */
@@ -2157,9 +2536,9 @@ CheckAttributeRecord(SGlobPtr GPtr, const HFSPlusAttrKey *key, const HFSPlusAttr
 	
 	if (doDelete == true) {
 		result = DeleteBTreeRecord(GPtr->calculatedAttributesFCB, key);
-		dprintf (d_info|d_xattr, "%s: Deleting attribute %s for fileID %d, type = %d\n", __FUNCTION__, attrname, key->fileID, rec->recordType);
+		DPRINTF (d_info|d_xattr, "%s: Deleting attribute %s for fileID %d, type = %d\n", __FUNCTION__, attrname, key->fileID, rec->recordType);
 		if (result) {
-			dprintf (d_error|d_xattr, "%s: Error in deleting record for %s for fileID %d, type = %d\n", __FUNCTION__, attrname, key->fileID, rec->recordType);
+			DPRINTF (d_error|d_xattr, "%s: Error in deleting record for %s for fileID %d, type = %d\n", __FUNCTION__, attrname, key->fileID, rec->recordType);
 		}
 		
 		/* Set flags to mark header and map dirty */
@@ -2176,7 +2555,7 @@ update_out:
 	/* Always update the last recordType, fileID and attribute name before exiting */
 	prevAttr->recordType = rec->recordType;
 	prevAttr->fileID = fileID;
-	(void) strlcpy((char *)prevAttr->attrname, (char *)attrname, sizeof(prevAttr->attrname));
+	(void) strncpy((char *)prevAttr->attrname, (char *)attrname, sizeof(prevAttr->attrname));
 
 	goto out;
 
@@ -2205,6 +2584,140 @@ out:
 	return(result);
 }
 	
+/* Function:	RecordXAttrBits
+ *
+ * Description:
+ * This function increments the prime number buckets for the associated 
+ * prime bucket set based on the flags and btreetype to determine 
+ * the discrepancy between the attribute btree and catalog btree for
+ * extended attribute data consistency.  This function is based on
+ * Chinese Remainder Theorem.  
+ * 
+ * Alogrithm:
+ * 1. If none of kHFSHasAttributesMask or kHFSHasSecurity mask is set, 
+ *    return.
+ * 2. Based on btreetype and the flags, determine which prime number
+ *    bucket should be updated.  Initialize pointers accordingly. 
+ * 3. Divide the fileID with pre-defined prime numbers. Store the 
+ *    remainder.
+ * 4. Increment each prime number bucket at an offset of the 
+ *    corresponding remainder with one.
+ *
+ * Input:	1. GPtr - pointer to global scavenger area
+ *        	2. flags - can include kHFSHasAttributesMask and/or kHFSHasSecurityMask
+ *        	3. fileid - fileID for which particular extended attribute is seen
+ *     	   	4. btreetye - can be kHFSPlusCatalogRecord or kHFSPlusAttributeRecord
+ *                            indicates which btree prime number bucket should be incremented
+ *
+ * Output:	nil
+ */
+void RecordXAttrBits(SGlobPtr GPtr, UInt16 flags, HFSCatalogNodeID fileid, UInt16 btreetype) 
+{
+	PrimeBuckets *cur_attr = NULL;
+	PrimeBuckets *cur_sec = NULL;
+
+	if ( ((flags & kHFSHasAttributesMask) == 0) && 
+	     ((flags & kHFSHasSecurityMask) == 0) ) {
+		/* No attributes exists for this fileID */
+		goto out;
+	}
+	
+	/* Determine which bucket are we updating */
+	if (btreetype ==  kCalculatedCatalogRefNum) {
+		/* Catalog BTree buckets */
+		if (flags & kHFSHasAttributesMask) {
+			cur_attr = &(GPtr->CBTAttrBucket); 
+			GPtr->cat_ea_count++;
+		}
+		if (flags & kHFSHasSecurityMask) {
+			cur_sec = &(GPtr->CBTSecurityBucket); 
+			GPtr->cat_acl_count++;
+		}
+	} else if (btreetype ==  kCalculatedAttributesRefNum) {
+		/* Attribute BTree buckets */
+		if (flags & kHFSHasAttributesMask) {
+			cur_attr = &(GPtr->ABTAttrBucket); 
+			GPtr->attr_ea_count++;
+		}
+		if (flags & kHFSHasSecurityMask) {
+			cur_sec = &(GPtr->ABTSecurityBucket); 
+			GPtr->attr_acl_count++;
+		}
+	} else {
+		/* Incorrect btreetype found */
+		goto out;
+	}
+
+	if (cur_attr) {
+		add_prime_bucket_uint32(cur_attr, fileid);
+	}
+
+	if (cur_sec) {
+		add_prime_bucket_uint32(cur_sec, fileid);
+	}
+
+out:
+	return;
+}
+
+/* Function:	CompareXattrPrimeBuckets
+ *
+ * Description:
+ * This function compares the prime number buckets for catalog btree
+ * and attribute btree for the given attribute type (normal attribute
+ * bit or security bit).
+ *
+ * Input:	1. GPtr - pointer to global scavenger area
+ *         	2. BitMask - indicate which attribute type should be compared.
+ *        	             can include kHFSHasAttributesMask and/or kHFSHasSecurityMask
+ * Output:	zero - buckets were compared successfully
+ *            	non-zero - buckets were not compared 
+ */
+static int CompareXattrPrimeBuckets(SGlobPtr GPtr, UInt16 BitMask) 
+{
+	int result = 1;
+	PrimeBuckets *cat;	/* Catalog BTree */
+	PrimeBuckets *attr;	/* Attribute BTree */
+	
+	/* Find the correct PrimeBuckets to compare */
+	if (BitMask & kHFSHasAttributesMask) {
+		/* Compare buckets for attribute bit */
+		cat = &(GPtr->CBTAttrBucket);
+		attr = &(GPtr->ABTAttrBucket); 
+	} else if (BitMask & kHFSHasSecurityMask) {
+		/* Compare buckets for security bit */
+		cat = &(GPtr->CBTSecurityBucket);
+		attr = &(GPtr->ABTSecurityBucket); 
+	} else {
+		plog ("%s: Incorrect BitMask found.\n", __FUNCTION__);
+		goto out;
+	}
+
+	result = compare_prime_buckets(cat, attr);
+	if (result) {
+		char catbtree[32], attrbtree[32];
+		/* Unequal values found, set the error bit in ABTStat */
+		if (BitMask & kHFSHasAttributesMask) {
+			fsckPrint(GPtr->context, E_IncorrectAttrCount);
+			sprintf (catbtree, "%u", GPtr->cat_ea_count);
+			sprintf (attrbtree, "%u", GPtr->attr_ea_count);
+			fsckPrint(GPtr->context, E_BadValue, attrbtree, catbtree);
+			GPtr->ABTStat |= S_AttributeCount; 
+		} else {
+			fsckPrint(GPtr->context, E_IncorrectSecurityCount);
+			sprintf (catbtree, "%u", GPtr->cat_acl_count);
+			sprintf (attrbtree, "%u", GPtr->attr_acl_count);
+			fsckPrint (GPtr->context, E_BadValue, attrbtree, catbtree);
+			GPtr->ABTStat |= S_SecurityCount; 
+		}
+	} 
+
+	result = 0;
+
+out:
+	return result;
+}
+
 /*------------------------------------------------------------------------------
 
 Function:	AttrBTChk - (Attributes BTree Check)
@@ -2229,7 +2742,7 @@ OSErr AttrBTChk( SGlobPtr GPtr )
 		return noErr;
 	
 	//	Write the status message here to avoid potential confusion to user.
-	WriteMsg( GPtr, M_AttrBTChk, kStatusMessage );
+	fsckPrint(GPtr->context, hfsExtAttrBTCheck);
 
 	//	Set up
 	GPtr->TarID		= kHFSAttributesFileID;				//	target = attributes file
@@ -2250,11 +2763,11 @@ OSErr AttrBTChk( SGlobPtr GPtr )
 	RecordLastAttrBits(GPtr);
 
 	//	compare the attributes prime buckets calculated from catalog btree and attribute btree 
-	err = ComparePrimeBuckets(GPtr, kHFSHasAttributesMask);
+	err = CompareXattrPrimeBuckets(GPtr, kHFSHasAttributesMask);
 	ReturnIfError( err );
 
 	//	compare the security prime buckets calculated from catalog btree and attribute btree 
-	err = ComparePrimeBuckets(GPtr, kHFSHasSecurityMask);
+	err = CompareXattrPrimeBuckets(GPtr, kHFSHasSecurityMask);
 	ReturnIfError( err );
 
 	//
@@ -2264,6 +2777,12 @@ OSErr AttrBTChk( SGlobPtr GPtr )
 	err = BTMapChk( GPtr, kCalculatedAttributesRefNum );
 	ReturnIfError( err );														//	Invalid attributes BTree map
 
+	//
+	// Make sure unused nodes in the B-tree are zero filled.
+	//
+	err = BTCheckUnusedNodes(GPtr, kCalculatedAttributesRefNum, &GPtr->ABTStat);
+	ReturnIfError( err );
+	
 	//
 	//	compare BTree header record on disk with scavenger's BTree header record 
 	//
@@ -2306,11 +2825,11 @@ static int RcdValErr( SGlobPtr GPtr, OSErr type, UInt32 correct, UInt32 incorrec
 	char goodStr[32], badStr[32];
 
 	isHFSPlus = VolumeObjectIsHFSPlus( );
-	PrintError(GPtr, type, 0);
-	sprintf(goodStr, "%d", correct);
-	sprintf(badStr, "%d", incorrect);
-	PrintError(GPtr, E_BadValue, 2, goodStr, badStr);
-	
+	fsckPrint(GPtr->context, type);
+	sprintf(goodStr, "%u", correct);
+	sprintf(badStr, "%u", incorrect);
+	fsckPrint(GPtr->context, E_BadValue, goodStr, badStr);
+
 	if (type == E_DirVal)									/* if normal directory valence error */
 		n = CatalogNameSize( &GPtr->CName, isHFSPlus); 
 	else
@@ -2333,6 +2852,81 @@ static int RcdValErr( SGlobPtr GPtr, OSErr type, UInt32 correct, UInt32 incorrec
 	return( noErr );										/* successful return */
 }
 
+/*------------------------------------------------------------------------------
+
+Name:		RcdHsFldCntErr - (Record HasFolderCount)
+
+Function:	Allocates a RepairOrder node and linkg it into the 'GPtr->RepairP'
+			list, to describe folder flag missing the HasFolderCount bit
+
+Input:		GPtr		- ptr to scavenger global data
+			type		- error code (E_xxx), which should be >0
+			correct		- the folder mask, as computed here
+			incorrect	- the folder mask, as found in volume
+			fid			- the folder id
+
+Output:		0 			- no error
+			R_NoMem		- not enough mem to allocate record
+------------------------------------------------------------------------------*/
+
+int RcdHsFldCntErr( SGlobPtr GPtr, OSErr type, UInt32 correct, UInt32 incorrect, HFSCatalogNodeID fid )
+{
+	RepairOrderPtr	p;										/* the new node we compile */
+	char goodStr[32], badStr[32];
+	fsckPrint(GPtr->context, type, fid);
+	sprintf(goodStr, "%#x", correct);
+	sprintf(badStr, "%#x", incorrect);
+	fsckPrint(GPtr->context, E_BadValue, goodStr, badStr);
+	
+	p = AllocMinorRepairOrder( GPtr,0 );					/* get the node */
+	if (p==NULL) 											/* quit if out of room */
+		return (R_NoMem);
+	
+	p->type			= type;									/* save error info */
+	p->correct		= correct;
+	p->incorrect	= incorrect;
+	p->parid		= fid;
+	
+	return( noErr );										/* successful return */
+}
+/*------------------------------------------------------------------------------
+
+Name:		RcdFCntErr - (Record Folder Count)
+
+Function:	Allocates a RepairOrder node and linkg it into the 'GPtr->RepairP'
+			list, to describe an incorrect folder count for possible repair.
+
+Input:		GPtr		- ptr to scavenger global data
+			type		- error code (E_xxx), which should be >0
+			correct		- the correct folder count, as computed here
+			incorrect	- the incorrect folder count as found in volume
+			fid		- the folder id
+
+Output:		0 			- no error
+			R_NoMem		- not enough mem to allocate record
+------------------------------------------------------------------------------*/
+
+int RcdFCntErr( SGlobPtr GPtr, OSErr type, UInt32 correct, UInt32 incorrect, HFSCatalogNodeID fid )
+{
+	RepairOrderPtr	p;										/* the new node we compile */
+	char goodStr[32], badStr[32];
+
+	fsckPrint(GPtr->context, type, fid);
+	sprintf(goodStr, "%u", correct);
+	sprintf(badStr, "%u", incorrect);
+	fsckPrint(GPtr->context, E_BadValue, goodStr, badStr);
+	
+	p = AllocMinorRepairOrder( GPtr,0 );					/* get the node */
+	if (p==NULL) 											/* quit if out of room */
+		return (R_NoMem);
+	
+	p->type			= type;									/* save error info */
+	p->correct		= correct;
+	p->incorrect	= incorrect;
+	p->parid		= fid;
+
+	return( noErr );										/* successful return */
+}
 
 /*------------------------------------------------------------------------------
 
@@ -2408,7 +3002,7 @@ static	OSErr	RcdInvalidWrapperExtents( SGlobPtr GPtr, OSErr type )
 #endif
 
 
-#if(0)	//	We just check and fix them in SRepair.c
+#if 0	//	We just check and fix them in SRepair.c
 /*------------------------------------------------------------------------------
 
 Name:		RcdOrphanedExtentErr 
@@ -2511,13 +3105,13 @@ OSErr VInfoChk( SGlobPtr GPtr )
 		GPtr->VIStat = GPtr->VIStat | S_MDB;
 		if ( VolumeObjectIsHFS( ) ) {
 			WriteError( GPtr, E_MDBDamaged, 0, 0 );
-			if ( GPtr->logLevel >= kDebugLog ) 
-				printf("\tinvalid alternate MDB at %qd result %d \n", GPtr->TarBlock, result);
+			if ( fsckGetVerbosity(GPtr->context) >= kDebugLog ) 
+				plog("\tinvalid alternate MDB at %qd result %d \n", GPtr->TarBlock, result);
 		}
 		else {
 			WriteError( GPtr, E_VolumeHeaderDamaged, 0, 0 );
-			if ( GPtr->logLevel >= kDebugLog ) 
-				printf("\tinvalid alternate VHB at %qd result %d \n", GPtr->TarBlock, result);
+			if ( fsckGetVerbosity(GPtr->context) >= kDebugLog ) 
+				plog("\tinvalid alternate VHB at %qd result %d \n", GPtr->TarBlock, result);
 		}
 		result = noErr;
 		goto exit;
@@ -2539,13 +3133,13 @@ OSErr VInfoChk( SGlobPtr GPtr )
 		GPtr->VIStat = GPtr->VIStat | S_MDB;
 		if ( VolumeObjectIsHFS( ) ) {
 			WriteError( GPtr, E_MDBDamaged, 1, 0 );
-			if ( GPtr->logLevel >= kDebugLog )
-				printf("\tinvalid primary MDB at %qd result %d \n", GPtr->TarBlock, result);
+			if ( fsckGetVerbosity(GPtr->context) >= kDebugLog )
+				plog("\tinvalid primary MDB at %qd result %d \n", GPtr->TarBlock, result);
 		}
 		else {
 			WriteError( GPtr, E_VolumeHeaderDamaged, 1, 0 );
-			if ( GPtr->logLevel >= kDebugLog )
-				printf("\tinvalid primary VHB at %qd result %d \n", GPtr->TarBlock, result);
+			if ( fsckGetVerbosity(GPtr->context) >= kDebugLog )
+				plog("\tinvalid primary VHB at %qd result %d \n", GPtr->TarBlock, result);
 		}
 		result = noErr;
 		goto exit;
@@ -2557,16 +3151,15 @@ OSErr VInfoChk( SGlobPtr GPtr )
 	{
 		GPtr->VIStat |= S_WMDB;
 		WriteError( GPtr, E_MDBDamaged, 0, 0 );
-		if ( GPtr->logLevel >= kDebugLog )
-			printf("\tinvalid wrapper MDB \n");
+		if ( fsckGetVerbosity(GPtr->context) >= kDebugLog )
+			plog("\tinvalid wrapper MDB \n");
 	}
 	
 	if ( isHFSPlus )
 	{
 		HFSPlusVolumeHeader *	volumeHeader;
 		HFSPlusVolumeHeader *	alternateVolumeHeader;
-		UInt64					totalSectors;
-			
+
 		alternateVolumeHeader = (HFSPlusVolumeHeader *) altBlock.buffer;
 		volumeHeader = (HFSPlusVolumeHeader *) priBlock.buffer;
 	
@@ -2595,9 +3188,11 @@ OSErr VInfoChk( SGlobPtr GPtr )
 				  (alternateVolumeHeader->rsrcClumpSize <= kMaxClumpSize) && 
 				  ((alternateVolumeHeader->rsrcClumpSize % vcb->vcbBlockSize) == 0) )
 			vcb->vcbRsrcClumpSize = alternateVolumeHeader->rsrcClumpSize;
-		else
+		else if (4ULL * vcb->vcbBlockSize <= kMaxClumpSize)
 			vcb->vcbRsrcClumpSize = 4 * vcb->vcbBlockSize;
-	
+		else
+			vcb->vcbRsrcClumpSize = vcb->vcbBlockSize;	/* for very large volumes, just use 1 allocation block */
+
 		if ( vcb->vcbRsrcClumpSize > kMaxClumpSize )
 			vcb->vcbRsrcClumpSize = vcb->vcbBlockSize;	/* for very large volumes, just use 1 allocation block */
 
@@ -2608,8 +3203,10 @@ OSErr VInfoChk( SGlobPtr GPtr )
 				  (alternateVolumeHeader->dataClumpSize <= kMaxClumpSize) && 
 				  ((alternateVolumeHeader->dataClumpSize % vcb->vcbBlockSize) == 0) )
 			vcb->vcbDataClumpSize = alternateVolumeHeader->dataClumpSize;
-		else
+		else if (4ULL * vcb->vcbBlockSize <= kMaxClumpSize)
 			vcb->vcbDataClumpSize = 4 * vcb->vcbBlockSize;
+		else
+			vcb->vcbDataClumpSize = vcb->vcbBlockSize;	/* for very large volumes, just use 1 allocation block */
 	
 		if ( vcb->vcbDataClumpSize > kMaxClumpSize )
 			vcb->vcbDataClumpSize = vcb->vcbBlockSize;	/* for very large volumes, just use 1 allocation block */
@@ -2656,15 +3253,6 @@ OSErr VInfoChk( SGlobPtr GPtr )
 			vcb->vcbCatalogFile->fcbClumpSize = 
 			(alternateVolumeHeader->catalogFile.extents[0].blockCount * vcb->vcbBlockSize);
 			
-		// make sure clump size is at least 1MB for volumes greater than 500MB
-		totalSectors = ( VolumeObjectIsEmbeddedHFSPlus( ) ) ? myVOPtr->totalEmbeddedSectors 
-															: myVOPtr->totalDeviceSectors;
-		if ( (totalSectors * myVOPtr->sectorSize) > (1024 * 1024 * 500) ) 
-		{
-			if ( vcb->vcbCatalogFile->fcbClumpSize < (1024 * 1024) )
-				vcb->vcbCatalogFile->fcbClumpSize = (1024 * 1024);
-		}
-	
 		//	check out allocations file clump size
 		if ( ((volumeHeader->allocationFile.clumpSize % vcb->vcbBlockSize) == 0) && 
 			 (volumeHeader->allocationFile.clumpSize <= maxClump) )
@@ -2675,7 +3263,25 @@ OSErr VInfoChk( SGlobPtr GPtr )
 		else
 			vcb->vcbAllocationFile->fcbClumpSize = 
 			(alternateVolumeHeader->allocationFile.extents[0].blockCount * vcb->vcbBlockSize);
-	
+
+		//	check out attribute file clump size
+		if (vcb->vcbAttributesFile) {
+			if ( ((volumeHeader->attributesFile.clumpSize % vcb->vcbBlockSize) == 0) && 
+			     (volumeHeader->attributesFile.clumpSize <= maxClump) &&
+			     (volumeHeader->attributesFile.clumpSize != 0))
+				vcb->vcbAttributesFile->fcbClumpSize = volumeHeader->attributesFile.clumpSize;
+			else if ( ((alternateVolumeHeader->attributesFile.clumpSize % vcb->vcbBlockSize) == 0) && 
+				  (alternateVolumeHeader->attributesFile.clumpSize <= maxClump) &&
+				  (alternateVolumeHeader->attributesFile.clumpSize != 0))
+				vcb->vcbAttributesFile->fcbClumpSize = alternateVolumeHeader->attributesFile.clumpSize;
+			else if (vcb->vcbCatalogFile->fcbClumpSize != 0)
+				// The original attribute clump may be too small, use catalog's
+				vcb->vcbAttributesFile->fcbClumpSize = vcb->vcbCatalogFile->fcbClumpSize;
+			else
+				vcb->vcbAttributesFile->fcbClumpSize = 
+				alternateVolumeHeader->attributesFile.extents[0].blockCount * vcb->vcbBlockSize;
+		}
+
 		CopyMemory( volumeHeader->finderInfo, vcb->vcbFinderInfo, sizeof(vcb->vcbFinderInfo) );
 		
 		//	Now compare verified Volume Header info (in the form of a vcb) with Volume Header info on disk
@@ -2860,8 +3466,8 @@ OSErr	VLockedChk( SGlobPtr GPtr )
 	if ( (record.recordType == kHFSPlusFolderRecord) || (record.recordType == kHFSFolderRecord) )
 	{
 		frFlags = record.recordType == kHFSPlusFolderRecord ?
-			SWAP_BE16(record.hfsPlusFolder.userInfo.frFlags) :
-			SWAP_BE16(record.hfsFolder.userInfo.frFlags);
+			record.hfsPlusFolder.userInfo.frFlags :
+			record.hfsFolder.userInfo.frFlags;
 	
 		if ( frFlags & fNameLocked )												// name locked bit set?
 			RcdNameLockedErr( GPtr, E_LockedDirName, frFlags );
@@ -2953,6 +3559,155 @@ static int RecordBadExtent(SGlobPtr GPtr, UInt32 fileID, UInt8 forkType,
 	return (0);
 }
 
+/*
+ * Build a catalog node thread key.
+ */
+#if !LINUX
+__unused static void
+buildthreadkey(UInt32 parentID, int std_hfs, CatalogKey *key)
+{
+	if (std_hfs) {
+		key->hfs.keyLength = kHFSCatalogKeyMinimumLength;
+		key->hfs.reserved = 0;
+		key->hfs.parentID = parentID;
+		key->hfs.nodeName[0] = 0;
+	} else {
+		key->hfsPlus.keyLength = kHFSPlusCatalogKeyMinimumLength;
+		key->hfsPlus.parentID = parentID;
+		key->hfsPlus.nodeName.length = 0;
+	}
+}
+#endif
+
+static void
+printpath(SGlobPtr GPtr, UInt32 fileID)
+{
+	int result;
+	char path[PATH_MAX * 4];
+	unsigned int pathlen = PATH_MAX * 4;
+
+	if (fileID < kHFSFirstUserCatalogNodeID) {
+		switch(fileID) {
+		case kHFSExtentsFileID:
+			printf("$Extents_Overflow_File\n");
+			return;
+		case kHFSCatalogFileID:
+			printf("$Catalog_File\n");
+			return;
+		case kHFSAllocationFileID:
+			printf("$Allocation_Bitmap_File\n");
+			return;
+		case kHFSAttributesFileID:
+			printf("$Attributes_File\n");
+			return;
+		default:
+			printf("$File_ID_%d\n", fileID);
+			return;
+		}
+	}
+
+	result = GetFileNamePathByID(GPtr, fileID, path, &pathlen, NULL, NULL, NULL);
+	if (result) {
+		printf ("error %d getting path for id=%u\n", result, fileID);
+	}
+
+	printf("\"ROOT_OF_VOLUME%s\" (file id=%u)\n", path, fileID);
+}
+
+void
+CheckPhysicalMatch(SVCB *vcb, UInt32 startblk, UInt32 blkcount, UInt32 fileNumber, UInt8 forkType)
+{
+	int i;
+	u_int64_t blk, blk1, blk2;
+	u_int64_t offset;
+
+	offset = (u_int64_t) startblk * (u_int64_t) vcb->vcbBlockSize;
+	
+	if (vcb->vcbSignature == kHFSPlusSigWord)
+		offset += vcb->vcbEmbeddedOffset;	// offset into the wrapper
+	else
+		offset += vcb->vcbAlBlSt * 512ULL;	// offset to start of volume
+	
+	blk1 = offset / gBlockSize;
+	blk2 = blk1 + ((blkcount * vcb->vcbBlockSize) / gBlockSize);
+	
+	for (i = 0; i < gBlkListEntries; ++i) {
+		blk = gBlockList[i];
+
+		if (blk >= blk1 && blk < blk2) {
+		//	printf("block %d is in file %d\n", blk, fileNumber);			
+			/* Do we need to grow the found blocks list? */
+			if (gFoundBlockEntries % FOUND_BLOCKS_QUANTUM == 0) {
+				struct found_blocks *new_blocks;
+				new_blocks = realloc(gFoundBlocksList, (gFoundBlockEntries + FOUND_BLOCKS_QUANTUM) * sizeof(struct found_blocks));
+				if (new_blocks == NULL) {
+					fprintf(stderr, "CheckPhysicalMatch: Out of memory!\n");
+					return;
+				}
+				gFoundBlocksList = new_blocks;
+			}
+			gFoundBlocksList[gFoundBlockEntries].block = blk;
+			gFoundBlocksList[gFoundBlockEntries].fileID = fileNumber;
+			++gFoundBlockEntries;
+		}
+	}
+}
+
+static int compare_found_blocks(const void *x1_arg, const void *x2_arg)
+{
+	const struct found_blocks *x1 = x1_arg;
+	const struct found_blocks *x2 = x2_arg;
+	
+	if (x1->block < x2->block)
+		return -1;
+	else if (x1->block > x2->block)
+		return 1;
+	else {
+		if (x1->fileID < x2->fileID)
+			return -1;
+		else if (x1->fileID > x2->fileID)
+			return 1;
+	}
+	
+	return 0;
+}
+
+void
+dumpblocklist(SGlobPtr GPtr)
+{
+	int i, j;
+	u_int64_t block;
+
+	/* Sort the found blocks */
+	qsort(gFoundBlocksList, gFoundBlockEntries, sizeof(struct found_blocks), compare_found_blocks);
+	
+	/*
+	 * Print out the blocks with matching files.  In the case of overlapped
+	 * extents, the same block number will be printed multiple times, with
+	 * each file containing an overlapping extent.  If overlapping extents
+	 * come from the same file, then that path will be printed multiple times.
+	 */
+	for (i = 0; i < gFoundBlockEntries; ++i) {
+		block = gFoundBlocksList[i].block;
+
+		printf("block %llu:\t", (unsigned long long) block);
+		printpath(GPtr, gFoundBlocksList[i].fileID);
+		
+		/* Remove block from the gBlockList */
+		for (j = 0; j < gBlkListEntries; ++j) {
+			if (gBlockList[j] == block) {
+				gBlockList[j] = gBlockList[--gBlkListEntries];
+				break;
+			}
+		}
+	}
+	
+	/* Print out the blocks without matching files */
+	for (j = 0; j < gBlkListEntries; ++j) {
+		printf("block %llu:\t*** NO MATCH ***\n", (unsigned long long) gBlockList[j]);
+	}
+}
+
 /*------------------------------------------------------------------------------
 
 Function:	CheckFileExtents - (Check File Extents)
@@ -3034,7 +3789,7 @@ OSErr	CheckFileExtents( SGlobPtr GPtr, UInt32 fileNumber, UInt8 forkType,
 		//	checkout the extent record first
 		err = ChkExtRec( GPtr, extents, &lastExtentIndex );
 		if (err != noErr) {
-			dprintf (d_info, "%s: Bad extent for fileID %u in extent %u for startblock %u\n", __FUNCTION__, fileNumber, lastExtentIndex, blockCount);
+			DPRINTF (d_info, "%s: Bad extent for fileID %u in extent %u for startblock %u\n", __FUNCTION__, fileNumber, lastExtentIndex, blockCount);
 
 			/* Stop verification if bad extent is found for system file or EA */
 			if ((fileNumber < kHFSFirstUserCatalogNodeID) ||
@@ -3065,6 +3820,9 @@ OSErr	CheckFileExtents( SGlobPtr GPtr, UInt32 fileNumber, UInt8 forkType,
 	
 			if ( extentBlockCount == 0 )
 				break;
+
+			if (gBlkListEntries != 0)
+				CheckPhysicalMatch(GPtr->calculatedVCB, extentStartBlock, extentBlockCount, fileNumber, forkType);
 
 			err = CaptureBitmapBits(extentStartBlock, extentBlockCount);
 			if (err == E_OvlExt) {
@@ -3182,7 +3940,7 @@ void	BuildExtentKey( Boolean isHFSPlus, UInt8 forkType, HFSCatalogNodeID fileNum
 //
 static OSErr	AddExtentToOverlapList( SGlobPtr GPtr, HFSCatalogNodeID fileNumber, const char *attrname, UInt32 extentStartBlock, UInt32 extentBlockCount, UInt8 forkType )
 {
-	UInt32			newHandleSize;
+	size_t			newHandleSize;
 	ExtentInfo		extentInfo;
 	ExtentsTable	**extentsTableH;
 	size_t attrlen;
@@ -3201,7 +3959,7 @@ static OSErr	AddExtentToOverlapList( SGlobPtr GPtr, HFSCatalogNodeID fileNumber,
 		if (extentInfo.attrname == NULL) {
 			return(memFullErr);
 		}
-		strlcpy(extentInfo.attrname, attrname, attrlen);
+		strncpy(extentInfo.attrname, attrname, attrlen);
 	}
 	
 	//	If it's uninitialized
@@ -3558,12 +4316,12 @@ traverseAttribute:
 	selCode = 1;	/* Get next record */
 	do {
 		if (attrRecord.recordType == kHFSPlusAttrForkData) {
-			(void) utf_encodestr(attrKey.attrName, attrKey.attrNameLen * 2, (unsigned char *)attrName, &len);
+			(void) utf_encodestr(attrKey.attrName, attrKey.attrNameLen * 2, (unsigned char *)attrName, &len, sizeof(attrName));
 			attrName[len] = '\0';
 
 			CheckHFSPlusExtentRecords(GPtr, attrKey.fileID, attrName, attrRecord.forkData.theFork.extents, kEAData);
 		} else if (attrRecord.recordType == kHFSPlusAttrExtents) {
-			(void) utf_encodestr(attrKey.attrName, attrKey.attrNameLen * 2, (unsigned char *)attrName, &len);
+			(void) utf_encodestr(attrKey.attrName, attrKey.attrNameLen * 2, (unsigned char *)attrName, &len, sizeof(attrName));
 			attrName[len] = '\0';
 
 			CheckHFSPlusExtentRecords(GPtr, attrKey.fileID, attrName, attrRecord.overflowExtents.extents, kEAData);
@@ -3611,9 +4369,7 @@ void PrintOverlapFiles (SGlobPtr GPtr)
 	unsigned int numOverlapExtents;
 	unsigned int buflen, filepathlen;
 	char *filepath = NULL;
-	char filenum[32];
 	UInt32 lastID = 0;
-	UInt32 bytesWritten;
 	Boolean printMsg;
 	Boolean	isHFSPlus;
 	int i;
@@ -3645,34 +4401,30 @@ void PrintOverlapFiles (SGlobPtr GPtr)
 		printMsg = false;
 
 		if (filepath) {
-			/* prefix with the file ID */
-			bytesWritten = sprintf (filepath, "%u ", extentInfo->fileID);
-			filepathlen = buflen - bytesWritten;
-	
+			filepathlen = buflen; 
 			if (extentInfo->fileID >= kHFSFirstUserCatalogNodeID) {
 				/* Lookup the file path */
-				err = GetFileNamePathByID (GPtr, extentInfo->fileID, (filepath + bytesWritten), &filepathlen, NULL, NULL, NULL);
+				err = GetFileNamePathByID (GPtr, extentInfo->fileID, filepath, &filepathlen, NULL, NULL, NULL);
 			} else {
 				/* Get system filename */
-			 	err = GetSystemFileName (extentInfo->fileID, (filepath + bytesWritten), &filepathlen);
+			 	err = GetSystemFileName (extentInfo->fileID, filepath, &filepathlen);
 			}
 
 			if (err == noErr) {
 				/* print fileID, filepath */
-				PrintError(GPtr, E_OvlExt, 1, filepath);
+				fsckPrint(GPtr->context, E_OvlExt, extentInfo->fileID, filepath);
 				printMsg = true;
 			}
 				
-			if (GPtr->logLevel >= kDebugLog) {
-				printf ("\textentType=0x%x, startBlock=0x%x, blockCount=0x%x, attrName=%s\n", 
+			if (fsckGetVerbosity(GPtr->context) >= kDebugLog) {
+				plog ("\textentType=0x%x, startBlock=0x%x, blockCount=0x%x, attrName=%s\n", 
 						 extentInfo->forkType, extentInfo->startBlock, extentInfo->blockCount, extentInfo->attrname);
 			}
 		}
 
 		if (printMsg == false) {
-			/* print only filenumber */
-			sprintf(filenum, "%u", extentInfo->fileID);
-			PrintError(GPtr, E_OvlExt, 1, filenum);
+			/* print only fileID */
+			fsckPrint(GPtr->context, E_OvlExtID, extentInfo->fileID);
 		}
 	}
 
@@ -3701,3 +4453,53 @@ static int CompareExtentFileID(const void *first, const void *second)
 	return (((ExtentInfo *)first)->fileID - 
 			((ExtentInfo *)second)->fileID);
 } /* CompareExtentFileID */
+
+/* Function: journal_replay 
+ * 
+ * Description: Replay journal on a journaled HFS+ volume.  This function 
+ * returns success if the volume is not journaled or the journal was not 
+ * dirty.  If there was any error in replaying the journal, a non-zero value
+ * is returned.
+ * 
+ * Output:
+ * 	0 - success, non-zero - failure.
+ */
+//int journal_replay(SGlobPtr gptr)
+int journal_replay(const char *block_device)
+{
+#if LINUX
+	return 0;
+#else
+	int retval = 0;
+	struct vfsconf vfc;
+	int mib[4];
+	int jfd;
+
+	jfd = open(block_device, O_RDWR);
+	if (jfd == -1) {
+		retval = errno;
+		if (debug)
+			fplog(stderr, "Unable to open block device %s: %s", block_device, strerror(errno));
+		goto out;
+	}
+
+	retval = getvfsbyname("hfs", &vfc); 
+	if (retval) {
+		goto out;
+	}
+
+	mib[0] = CTL_VFS;
+	mib[1] = vfc.vfc_typenum;
+	mib[2] = HFS_REPLAY_JOURNAL;
+	mib[3] = jfd;
+	retval = sysctl(mib, 4, NULL, NULL, NULL, 0);
+	if (retval) {
+		retval = errno;
+	}
+	(void)close(jfd);
+
+out:
+	return retval;
+#endif
+}
+ 

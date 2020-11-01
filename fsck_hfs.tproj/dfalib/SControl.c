@@ -1,23 +1,22 @@
 /*
- * Copyright (c) 1999-2006 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 1999-2011 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * "Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
- * Reserved.  This file contains Original Code and/or Modifications of
- * Original Code as defined in and that are subject to the Apple Public
- * Source License Version 1.0 (the 'License').  You may not use this file
- * except in compliance with the License.  Please obtain a copy of the
- * License at http://www.apple.com/publicsource and read it before using
- * this file.
+ * This file contains Original Code and/or Modifications of Original Code
+ * as defined in and that are subject to the Apple Public Source License
+ * Version 2.0 (the 'License'). You may not use this file except in
+ * compliance with the License. Please obtain a copy of the License at
+ * http://www.opensource.apple.com/apsl/ and read it before using this
+ * file.
  * 
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
- * License for the specific language governing rights and limitations
- * under the License."
+ * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
+ * Please see the License for the specific language governing rights and
+ * limitations under the License.
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
@@ -35,18 +34,34 @@
 
 #define SHOW_ELAPSED_TIMES  0
 
+#include "missing.h"
 
 #if SHOW_ELAPSED_TIMES
 #include <sys/time.h>
 #endif
 
 #include "Scavenger.h"
+#include <setjmp.h>
+
+#ifndef CONFIG_HFS_TRIM
+#define CONFIG_HFS_TRIM 1
+#endif
 
 #define	DisplayTimeRemaining 0
 
+/* Variable containing diskdev_cmds tag number and date/time when the binary was built.
+ * This variable is populated automatically using version.pl by B&I when building the 
+ * project.  For development purposes, if the current directory name looks something 
+ * like a tag name or a version number is provided to buildit, buildit populates it 
+ * correctly.  For all other ways to build the code, like 'make', the tag number will 
+ * be left empty and only project name and build date/time will be shown.
+ */
+#if !LINUX
+extern char __diskdev_cmds_version[]; 
+#endif
 
 int gGUIControl;
-
+extern char lflag;
 
 
 // Static function prototypes
@@ -56,17 +71,134 @@ static Boolean IsBlueBoxSharedDrive ( DrvQElPtr dqPtr );
 static int ScavSetUp( SGlobPtr GPtr );
 static int ScavTerm( SGlobPtr GPtr );
 
-/* this procedure recieves progress calls and will allow canceling of procedures - we are using it here to print out the progress of the current operation for DFA and DiskUtility - ESP 1/10/00 */
+/* this procedure receives progress calls and will allow canceling of procedures - we are using it here to print out the progress of the current operation for DFA and DiskUtility - ESP 1/10/00 */
 
-int cancelProc(UInt16 progress, UInt16 secondsRemaining, Boolean progressChanged, UInt16 stage, void *context)
+int cancelProc(UInt16 progress, UInt16 secondsRemaining, Boolean progressChanged, UInt16 stage, void *context, int passno)
 {
-
-    if (progressChanged)
-        printf("(%d %%)\n", progress);
-    fflush(stdout);
+    if (progressChanged) {
+	int base;
+	int pct;
+	int scale;
+	static int lastPct = -1;
+	if (passno < 0) {
+	    base = 0;
+	    scale = 100;
+	} else {
+	    base = (passno * 100) / kMaxReScan;	// Multiply by 100 because we're doing ints
+	    scale = 100 / kMaxReScan;
+	}
+	pct = ((progress * scale) / 100) + base;
+	if (pct != lastPct && pct != 100) {
+	    fsckPrint((fsck_ctx_t)context, fsckProgress, pct);
+	    lastPct = pct;
+	    draw_progress(pct);
+	}
+    }
     return 0;
 }
 
+static const int kMaxMediumErrors = 25;
+
+/*
+ * Determine whether an error is major or minor.  The main critera we chose for
+ * this is whether you can continue to use -- reading, creating, and deleting --
+ * in a volume with the error present.  This should at some point go into the
+ * message structure itself.
+ */
+static int
+isMinorError(int msg, int *counts)
+{
+	switch (msg) {
+	case hfsExtBTCheck:
+	case hfsCatBTCheck:
+	case hfsCatHierCheck:
+	case hfsExtAttrBTCheck:
+	case hfsVolBitmapCheck:
+	case hfsVolInfoCheck:
+	case hfsHardLinkCheck:
+	case hfsRebuildExtentBTree:
+	case hfsRebuildCatalogBTree:
+	case hfsRebuildAttrBTree:
+	case hfsCaseSensitive:
+	case hfsMultiLinkDirCheck:
+	case hfsJournalVolCheck:
+	case hfsLiveVerifyCheck:
+	case hfsVerifyVolWithWrite:
+	case hfsCheckHFS:
+	case hfsCheckNoJnl:
+	case E_DirVal:
+	case E_CName:
+	case E_NoFile:
+	case E_NoRtThd:
+	case E_NoThd:
+	case E_NoDir:
+	case E_RtDirCnt:
+	case E_RtFilCnt:
+	case E_DirCnt:
+	case E_FilCnt:
+	case E_CatDepth:
+	case E_NoFThdFlg:
+	case E_CatalogFlagsNotZero:
+	case E_BadFileName:
+	case E_InvalidClumpSize:
+	case E_LockedDirName:
+	case E_FreeBlocks:
+	case E_LeafCnt:
+	case E_BadValue:
+	case E_InvalidID:
+	case E_DiskFull:
+	case E_InvalidLinkCount:
+	case E_UnlinkedFile:
+	case E_InvalidPermissions:
+	case E_InvalidUID_Unused:
+	case E_IllegalName:
+	case E_IncorrectNumThdRcd:
+	case E_SymlinkCreate:
+	case E_IncorrectAttrCount:
+	case E_IncorrectSecurityCount:
+	case E_PEOAttr:
+	case E_LEOAttr:
+	case E_FldCount:
+	case E_HsFldCount:
+	case E_BadPermPrivDir:
+	case E_DirInodeBadFlags:
+	case E_DirInodeBadParent:
+	case E_DirInodeBadName:
+	case E_DirHardLinkChain:
+	case E_DirHardLinkOwnerFlags:
+	case E_DirHardLinkFinderInfo:
+	case E_DirLinkAncestorFlags:
+	case E_DirHardLinkNesting:
+	case E_InvalidLinkChainPrev:
+	case E_InvalidLinkChainNext:
+	case E_FileInodeBadFlags:
+	case E_FileInodeBadName:
+	case E_FileHardLinkChain:
+	case E_FileHardLinkFinderInfo:
+	case E_InvalidLinkChainFirst:
+	case E_FileLinkBadFlags:
+	case E_DirLinkBadFlags:
+	case E_OrphanFileLink:
+	case E_OrphanDirLink:
+	case E_OrphanFileInode:
+	case E_OrphanDirInode:
+	case E_UnusedNodeNotZeroed:
+	case E_VBMDamagedOverAlloc:
+		return 1;
+	/*
+	 * A lot of EOF errors may indicate that there were some more significant
+	 * problems with the volume; just one by itself, with no other volume layout
+	 * problems, won't affect the volume usage.  So we keep track of them.
+	 */
+	case E_PEOF:
+	case E_LEOF:
+		if (++counts[abs(msg)] > kMaxMediumErrors)
+			return 0;
+		return 1;
+	default:
+		return 0;
+	}
+}
 
 /*------------------------------------------------------------------------------
 
@@ -75,10 +207,11 @@ External
 
 ------------------------------------------------------------------------------*/
 
+static jmp_buf				envBuf;
 int
-CheckHFS( 	int fsReadRef, int fsWriteRef, int checkLevel, int repairLevel, 
-			int logLevel, int guiControl, int lostAndFoundMode, 
-			int canWrite, int *modified )
+CheckHFS( const char *rdevnode, int fsReadRef, int fsWriteRef, int checkLevel, 
+	  int repairLevel, fsck_ctx_t fsckContext, int lostAndFoundMode, 
+	  int canWrite, int *modified, int liveMode, int rebuildOptions )
 {
 	SGlob				dataArea;	// Allocate the scav globals
 	short				temp; 	
@@ -88,30 +221,119 @@ CheckHFS( 	int fsReadRef, int fsWriteRef, int checkLevel, int repairLevel,
 	int					scanCount = 0;
 	int					isJournaled = 0;
 	Boolean 			autoRepair;
+	Boolean				exitEarly = 0;
+	__block int *msgCounts = NULL;
+	Boolean				majorErrors = 0;
+
+	if (checkLevel == kMajorCheck) {
+		checkLevel = kForceCheck;
+		exitEarly = 1;
+		msgCounts = malloc(sizeof(int) * E_LastError);
+	}
 
 	autoRepair = (fsWriteRef != -1 && repairLevel != kNeverRepair);
 
+	/* Initialize the messages only once before the verify stage */
+	if (fsckContext) {
+		extern fsck_message_t hfs_messages[];
+		extern fsck_message_t hfs_errors[];
+
+		if (fsckAddMessages(fsckContext, hfs_messages) == -1 || 
+		    fsckAddMessages(fsckContext, hfs_errors) == -1) {
+			// XXX
+			return -1;
+		}
+	}
+
+	/*  Get the diskdev_cmds version that is being built */
+	if (1) {
+		char *vstr, *tmp = __diskdev_cmds_version;
+
+		while (*tmp && *tmp != '@')
+			tmp++;
+
+		if (*tmp) {
+			if (*tmp == '@' &&
+				tmp[1] == '(' &&
+				tmp[2] == '#' &&
+				tmp[3] == ')' &&
+				tmp[4] == ' ')
+				tmp += 5;
+		}
+
+		if (*tmp) {
+			vstr = strdup(tmp);
+			if ((tmp = vstr) != NULL) {	// Assignment is deliberate!
+				while (*tmp && *tmp != ' ')
+					tmp++;
+				if (*tmp == ' ')
+					*tmp = 0;	// Don't print the time-stamp
+			}
+		} else {
+			vstr = strdup(__diskdev_cmds_version);
+		}
+
+		fsckPrint(fsckContext, fsckInformation, "fsck_hfs", vstr);
+		free(vstr);
+	}
+
+	if (setjmp(envBuf) == 1) {
+		/*
+		 * setjmp() returns the second argument to longjmp(), so if it returns 1, then
+		 * we've hit a major error.
+		 */
+		dataArea.RepLevel = repairLevelVeryMinorErrors;
+		majorErrors = 1;
+		goto EarlyExitLabel;
+	} else {
+		if (exitEarly && fsckContext) {
+			/*
+			 * Set the after-printing block to a small bit of code that checks to see if
+			 * the message in question corresponds to a major or a minor error.  If it's
+			 * major, we longjmp just above, which causes us to exit out early.
+			 */
+			fsckSetBlock(fsckContext, fsckPhaseAfterMessage, (fsckBlock_t) ^(fsck_ctx_t c, int msgNum, va_list args) {
+				if (abs(msgNum) > E_FirstError && abs(msgNum) < E_LastError) {
+					if (isMinorError(abs(msgNum), msgCounts) == 1)
+						return fsckBlockContinue;
+					longjmp(envBuf, 1);
+					return fsckBlockAbort;
+				} else {
+					return fsckBlockContinue;
+				}
+			});
+		}
+	}
 DoAgain:
 	ClearMemory( &dataArea, sizeof(SGlob) );
+	if (msgCounts)
+		memset(msgCounts, 0, sizeof(int) * E_LastError);
 
-	//	Initialize some scavanger globals
+	//	Initialize some scavenger globals
 	dataArea.itemsProcessed		= 0;	//	Initialize to 0% complete
 	dataArea.itemsToProcess		= 1;
 	dataArea.chkLevel			= checkLevel;
 	dataArea.repairLevel		= repairLevel;
-	dataArea.logLevel			= logLevel;
+	dataArea.rebuildOptions		= rebuildOptions;
 	dataArea.canWrite			= canWrite;
+	dataArea.writeRef			= fsWriteRef;
 	dataArea.lostAndFoundMode	= lostAndFoundMode;
 	dataArea.DrvNum				= fsReadRef;
-    
+	dataArea.liveVerifyState 	= liveMode;
+	dataArea.scanCount		= scanCount;
+    	if (strncpy(dataArea.deviceNode, rdevnode, sizeof(dataArea.deviceNode)) != strlen(rdevnode)) {
+		dataArea.deviceNode[0] = '\0';
+	}
+    	
     /* there are cases where we cannot get the name of the volume so we */
     /* set our default name to one blank */
 	dataArea.volumeName[ 0 ] = ' ';
 	dataArea.volumeName[ 1 ] = '\0';
 
-	if (guiControl) {
-	    dataArea.guiControl = true;
-    	dataArea.userCancelProc = cancelProc;
+	if (fsckContext) {
+		dataArea.context = fsckContext;
+		dataArea.guiControl = true;
+		dataArea.userCancelProc = cancelProc;
 	}
 	//
 	//	Initialize the scavenger
@@ -123,20 +345,25 @@ DoAgain:
 		goto termScav;
 	}
 
-	isJournaled = CheckIfJournaled( &dataArea );
-	if (isJournaled != 0
-	    && scanCount == 0
-	    && checkLevel != kForceCheck
-	    && !(checkLevel == kPartialCheck && repairLevel == kForceRepairs)) {
-		if (!guiControl) {
-	    		printf("fsck_hfs: Volume is journaled.  No checking performed.\n");
-	    		printf("fsck_hfs: Use the -f option to force checking.\n");
-		}
+	isJournaled = CheckIfJournaled( &dataArea, false );
+	if (isJournaled != 0 && 
+	    scanCount == 0 && 
+		checkLevel != kForceCheck && 
+	    !(checkLevel == kPartialCheck && repairLevel == kForceRepairs)) {
+			if (fsckGetOutputStyle(dataArea.context) == fsckOutputTraditional) {
+				plog("fsck_hfs: Volume is journaled.  No checking performed.\n");
+				plog("fsck_hfs: Use the -f option to force checking.\n");
+			}
 		scavError = 0;
 		goto termScav;
 	}
 	dataArea.calculatedVCB->vcbDriveNumber = fsReadRef;
 	dataArea.calculatedVCB->vcbDriverWriteRef = fsWriteRef;
+
+	// Only show the progress bar if we're doing a real check.
+	if (fsckContext) {
+		start_progress();
+	}
 
 	//
 	//	Now verify the volume
@@ -144,23 +371,17 @@ DoAgain:
 	if ( scavError == noErr )
 		ScavCtrl( &dataArea, scavVerify, &scavError );
         	
-	if (scavError == noErr && logLevel >= kDebugLog)
+EarlyExitLabel:
+	if (scavError == noErr && fsckGetVerbosity(dataArea.context) >= kDebugLog)
 		printVerifyStatus(&dataArea);
 
 	// Looped for maximum times for verify and repair.  This was the last verify and
 	// we bail out if problems were found
 	if (scanCount >= kMaxReScan && (dataArea.RepLevel != repairLevelNoProblemsFound)) {
-		PrintStatus(&dataArea, M_ReRepairFailed, 1, dataArea.volumeName);
+		fsckPrint(dataArea.context, fsckVolumeNotRepairedTries, dataArea.volumeName, scanCount);
 		scavError = R_RFail;
 		goto termScav;
 	}
-
-	// mark the volume clean if there are no errors and we have write access
-	// and either the volume is not marked as clean or if the volume is journaled.
-	// 
-	if ( scavError == noErr && fsWriteRef != -1 &&
-		 (dataArea.cleanUnmount == false || isJournaled != 0) ) 
-		CheckForClean(&dataArea, true);		/* mark volume clean */
 
 	if ( dataArea.RepLevel == repairLevelUnrepairable ) 
 		err = cdUnrepairableErr;
@@ -168,17 +389,25 @@ DoAgain:
 	if ( !autoRepair &&
 	     (dataArea.RepLevel == repairLevelVolumeRecoverable ||
 	      dataArea.RepLevel == repairLevelCatalogBtreeRebuild  ||
-	      dataArea.RepLevel == repairLevelUnrepairable) ) {
-		PrintStatus(&dataArea, M_NeedsRepair, 1, dataArea.volumeName);
+	      dataArea.RepLevel == repairLevelVeryMinorErrors) ) {
+		fsckPrint(dataArea.context, fsckVolumeCorruptNeedsRepair, dataArea.volumeName);
 		scavError = R_VFail;
 		goto termScav;
 	}
 
 	if ( scavError == noErr && dataArea.RepLevel == repairLevelNoProblemsFound ) {
+		if (CONFIG_HFS_TRIM &&
+		    (dataArea.canWrite != 0) && (dataArea.writeRef != -1) &&
+		    IsTrimSupported())
+		{
+			fsckPrint(dataArea.context, fsckTrimming);
+			TrimFreeBlocks(&dataArea);
+		}
+
 		if (scanCount == 0) {
-			PrintStatus(&dataArea, M_AllOK, 1, dataArea.volumeName);
+			fsckPrint(dataArea.context, fsckVolumeOK, dataArea.volumeName);
 		} else {
-			PrintStatus(&dataArea, M_RepairOK, 1, dataArea.volumeName);
+			fsckPrint(dataArea.context, fsckRepairSuccessful, dataArea.volumeName);
 		}
 	}
 
@@ -187,7 +416,15 @@ DoAgain:
 	//
 	if ( dataArea.RepLevel == repairLevelNoProblemsFound && repairLevel == kForceRepairs )
 	{
-		dataArea.CBTStat |= S_RebuildBTree;
+		if (rebuildOptions & REBUILD_CATALOG) {
+			dataArea.CBTStat |= S_RebuildBTree;
+		}
+		if (rebuildOptions & REBUILD_EXTENTS) {
+			dataArea.EBTStat |= S_RebuildBTree;
+		}
+		if (rebuildOptions & REBUILD_ATTRIBUTE) {
+			dataArea.ABTStat |= S_RebuildBTree;
+		}
 		dataArea.RepLevel = repairLevelCatalogBtreeRebuild;
 	}
 		
@@ -201,7 +438,7 @@ DoAgain:
 
 		if ( dataArea.canWrite == 0 ) {
 			scavError = R_WrErr;
-			PrintStatus( &dataArea, M_OtherWriters, 0 );
+			fsckPrint(dataArea.context, fsckVolumeNotRepairedInUse, dataArea.volumeName);
 		}
 		else
 			ScavCtrl( &dataArea, scavRepair, &scavError );
@@ -214,17 +451,19 @@ DoAgain:
 			ScavCtrl( &dataArea, scavTerminate, &temp );
 			repairLevel = kMajorRepairs;
 			checkLevel = kAlwaysCheck;
-			PrintStatus(&dataArea, M_Rescan, 0);
+			fsckPrint(dataArea.context, fsckRecheckingVolume);
 			scanCount++;
 			goto DoAgain;
 		}
-		else 
-			PrintStatus(&dataArea, M_RepairFailed, 1, dataArea.volumeName);
+		else {
+			fsckPrint(dataArea.context, fsckVolumeNotRepaired, dataArea.volumeName);
+		}
 	}
 	else if ( scavError != noErr ) {
-		PrintStatus(&dataArea, M_CheckFailed, 0);
-		if ( logLevel >= kDebugLog )
-			printf("volume check failed with error %d \n", scavError);
+		// Is this correct?
+		fsckPrint(dataArea.context, fsckVolumeVerifyIncomplete, dataArea.volumeName);
+		if ( fsckGetVerbosity(dataArea.context) >= kDebugLog )
+			plog("\tvolume check failed with error %d \n", scavError);
 	}
 
 	//	Set up structures for post processing
@@ -245,6 +484,9 @@ DoAgain:
 	}
 
 termScav:
+	if (gBlkListEntries != 0)
+		dumpblocklist(&dataArea);
+
 	if (err == noErr) {
 		err = scavError;
 	}
@@ -253,12 +495,40 @@ termScav:
 	//	Terminate the scavenger
 	//
 
-	if ( logLevel >= kDebugLog && 
+	if ( fsckGetVerbosity(dataArea.context) >= kDebugLog && 
 		 (err != noErr || dataArea.RepLevel != repairLevelNoProblemsFound) )
 		PrintVolumeObject();
-
+	
+	// If we have write access on volume and we are allowed to write, 
+	// mark the volume clean/dirty
+	if ((fsWriteRef != -1) && (dataArea.canWrite != 0)) {
+		Boolean update;
+		if (scavError) {
+			// Mark volume dirty 
+			CheckForClean(&dataArea, kMarkVolumeDirty, &update);
+		} else {
+			// Mark volume clean
+			CheckForClean(&dataArea, kMarkVolumeClean, &update);
+		}
+		if (update) {
+			/* Report back that volume was modified */
+			*modified = 1; 
+		}
+	}
 	ScavCtrl( &dataArea, scavTerminate, &temp );		//	Note: use a temp var so that real scav error can be returned
 		
+	if (fsckContext) {
+		fsckPrint( fsckContext, fsckProgress, 100);	// End each run with 100% message, if desired
+		draw_progress(100);
+		end_progress();
+	}
+	if (exitEarly && majorErrors)
+		err = MAJOREXIT;
+
+	if (msgCounts) {
+		free(msgCounts);
+	}
+
 	return( err );
 }
 
@@ -287,7 +557,7 @@ Output:		ScavRes		-	scavenge result code (R_xxx, or 0 if no error)
 void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 {
 	OSErr			result;
-	short			stat;
+	unsigned int		stat;
 #if SHOW_ELAPSED_TIMES
 	struct timeval 	myStartTime;
 	struct timeval 	myEndTime;
@@ -309,6 +579,7 @@ void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 	{
 		case scavInitialize:								//	INITIAL VOLUME CHECK
 		{
+			Boolean modified; 
 			int clean;
 
 			if ( ( result = ScavSetUp( GPtr ) ) )			//	set up BEFORE CheckForStop
@@ -321,7 +592,7 @@ void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 			/* Call for all chkLevel options and check return value only 
 			 * for kDirtyCheck for preen option and kNeverCheck for quick option
 			 */
-			clean = CheckForClean(GPtr, false);
+			clean = CheckForClean(GPtr, kCheckVolume, &modified);
 			if ((GPtr->chkLevel == kDirtyCheck) || (GPtr->chkLevel == kNeverCheck)) {
 				if (clean == 1) {
 					/* volume was unmounted cleanly */
@@ -340,7 +611,7 @@ void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 					 	 * Note: CheckIfJournaled will return negative
 					     * if it finds lastMountedVersion = FSK!.
 					     */
-						if (CheckIfJournaled(GPtr))
+						if (CheckIfJournaled(GPtr, false))
 							GPtr->cleanUnmount = true;
 						else
 							result = R_Dirty;
@@ -349,11 +620,39 @@ void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 				}
 			}
 			
-			if (CheckIfJournaled(GPtr)
+			if (CheckIfJournaled(GPtr, false)
 			    && GPtr->chkLevel != kForceCheck
 			    && !(GPtr->chkLevel == kPartialCheck && GPtr->repairLevel == kForceRepairs)
 				&& !(GPtr->chkLevel == kAlwaysCheck && GPtr->repairLevel == kMajorRepairs)) {
 			    break;
+			}
+
+			if (GPtr->liveVerifyState) {
+				fsckPrint(GPtr->context, hfsLiveVerifyCheck);
+			} else if (GPtr->canWrite == 0) {
+				fsckPrint(GPtr->context, hfsVerifyVolWithWrite);
+			}
+
+			/*
+			 * In the first pass, if fsck_hfs is verifying a
+			 * journaled volume, and it's not a live verification,
+			 * check to see if the journal is empty.  If it is not,
+			 * flag it as a journal error, and print a message.
+			 * (A live verify will almost certainly have a non-empty
+			 * journal, but that should be safe in this case due
+			 * to the freeze command flushing everything.)
+			 */
+			if ((GPtr->scanCount == 0) &&
+			    (CheckIfJournaled(GPtr, true) == 1) &&
+			    (GPtr->canWrite == 0 || GPtr->writeRef == -1) &&
+			    (lflag == 0)) {
+				if (IsJournalEmpty(GPtr) == 0) {
+					fsckPrint(GPtr->context, E_DirtyJournal);
+					GPtr->JStat |= S_DirtyJournal;
+				} else {
+					if (debug)
+						plog("Journal is empty\n");
+				}
 			}
 
 			result = IVChk( GPtr );
@@ -375,8 +674,8 @@ void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 #if SHOW_ELAPSED_TIMES
 			gettimeofday( &myEndTime, &zone );
 			timersub( &myEndTime, &myStartTime, &myElapsedTime );
-			printf( "\n%s - BitMapCheck elapsed time \n", __FUNCTION__ );
-			printf( "########## secs %d msecs %d \n\n", 
+			plog( "\n%s - BitMapCheck elapsed time \n", __FUNCTION__ );
+			plog( "########## secs %d msecs %d \n\n", 
 				myElapsedTime.tv_sec, myElapsedTime.tv_usec );
 #endif
 
@@ -402,8 +701,8 @@ void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 #if SHOW_ELAPSED_TIMES
 			gettimeofday( &myEndTime, &zone );
 			timersub( &myEndTime, &myStartTime, &myElapsedTime );
-			printf( "\n%s - create control blocks elapsed time \n", __FUNCTION__ );
-			printf( ">>>>>>>>>>>>> secs %d msecs %d \n\n", 
+			plog( "\n%s - create control blocks elapsed time \n", __FUNCTION__ );
+			plog( ">>>>>>>>>>>>> secs %d msecs %d \n\n", 
 				myElapsedTime.tv_sec, myElapsedTime.tv_usec );
 #endif
 
@@ -415,7 +714,7 @@ void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 				break;
 
 			GPtr->itemsProcessed += GPtr->onePercent;	// We do this 4 times as set up in CalculateItemCount() to smooth the scroll
-			WriteMsg( GPtr, M_ExtBTChk, kStatusMessage );
+			fsckPrint(GPtr->context, hfsExtBTCheck);
 
 #if SHOW_ELAPSED_TIMES
 			gettimeofday( &myStartTime, &zone );
@@ -428,8 +727,8 @@ void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 #if SHOW_ELAPSED_TIMES
 			gettimeofday( &myEndTime, &zone );
 			timersub( &myEndTime, &myStartTime, &myElapsedTime );
-			printf( "\n%s - ExtBTChk elapsed time \n", __FUNCTION__ );
-			printf( ">>>>>>>>>>>>> secs %d msecs %d \n\n", 
+			plog( "\n%s - ExtBTChk elapsed time \n", __FUNCTION__ );
+			plog( ">>>>>>>>>>>>> secs %d msecs %d \n\n", 
 				myElapsedTime.tv_sec, myElapsedTime.tv_usec );
 #endif
 				
@@ -446,7 +745,7 @@ void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 			
 			GPtr->itemsProcessed += GPtr->onePercent;	// We do this 4 times as set up in CalculateItemCount() to smooth the scroll
 			GPtr->itemsProcessed += GPtr->onePercent;
-			WriteMsg( GPtr, M_CatBTChk, kStatusMessage );
+			fsckPrint(GPtr->context, hfsCatBTCheck);
 
 #if SHOW_ELAPSED_TIMES
 			gettimeofday( &myStartTime, &zone );
@@ -457,7 +756,15 @@ void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 				/* skip the rest of the verify code path the first time */
 				/* through when we are rebuilding the catalog B-Tree file. */
 				/* we will be back here after the rebuild.  */
-				GPtr->CBTStat |= S_RebuildBTree;
+				if (GPtr->rebuildOptions & REBUILD_CATALOG) {
+					GPtr->CBTStat |= S_RebuildBTree;
+				}
+				if (GPtr->rebuildOptions & REBUILD_EXTENTS) {
+					GPtr->EBTStat |= S_RebuildBTree;
+				}
+				if (GPtr->rebuildOptions & REBUILD_ATTRIBUTE) {
+					GPtr->ABTStat |= S_RebuildBTree;
+				}
 				result = errRebuildBtree;
 				break;
 			}
@@ -472,15 +779,15 @@ void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 #if SHOW_ELAPSED_TIMES
 			gettimeofday( &myEndTime, &zone );
 			timersub( &myEndTime, &myStartTime, &myElapsedTime );
-			printf( "\n%s - CheckCatalogBTree elapsed time \n", __FUNCTION__ );
-			printf( ">>>>>>>>>>>>> secs %d msecs %d \n\n", 
+			plog( "\n%s - CheckCatalogBTree elapsed time \n", __FUNCTION__ );
+			plog( ">>>>>>>>>>>>> secs %d msecs %d \n\n", 
 				myElapsedTime.tv_sec, myElapsedTime.tv_usec );
 #endif
 
 			if ((result = CheckForStop(GPtr)))
 				break;
 
-			WriteMsg( GPtr, M_CatHChk, kStatusMessage );
+			fsckPrint(GPtr->context, hfsCatHierCheck);
 
 #if SHOW_ELAPSED_TIMES
 			gettimeofday( &myStartTime, &zone );
@@ -493,14 +800,22 @@ void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 #if SHOW_ELAPSED_TIMES
 			gettimeofday( &myEndTime, &zone );
 			timersub( &myEndTime, &myStartTime, &myElapsedTime );
-			printf( "\n%s - CatHChk elapsed time \n", __FUNCTION__ );
-			printf( ">>>>>>>>>>>>> secs %d msecs %d \n\n", 
+			plog( "\n%s - CatHChk elapsed time \n", __FUNCTION__ );
+			plog( ">>>>>>>>>>>>> secs %d msecs %d \n\n", 
 				myElapsedTime.tv_sec, myElapsedTime.tv_usec );
 #endif
 
 			if ((result = CheckForStop(GPtr)))
 				break;
 
+			if (VolumeObjectIsHFSX(GPtr)) {
+				result = CheckFolderCount(GPtr);
+				if (result)
+					break;
+
+				if ((result=CheckForStop(GPtr)))
+					break;
+			}
 			/* Check attribute btree.  The function accounts for all extents
 			 * for extended attributes whose values are stored in 
 			 * allocation blocks
@@ -531,7 +846,21 @@ void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 				(void) PrintOverlapFiles(GPtr);
 			}
 
-			WriteMsg( GPtr, M_VolumeBitMapChk, kStatusMessage );
+			/* Directory inodes store first link information in 
+			 * an extended attribute.  Therefore start directory 
+			 * hard link check after extended attribute checks.
+			 */
+			result = dirhardlink_check(GPtr);
+			/* On error or unrepairable corruption, stop the verification */
+			if ((result != 0) || (GPtr->CatStat & S_LinkErrNoRepair)) {
+				if (result == 0) {
+					result = -1;
+				}
+
+				break;
+			}
+
+			fsckPrint(GPtr->context, hfsVolBitmapCheck);
 
 #if SHOW_ELAPSED_TIMES
 			gettimeofday( &myStartTime, &zone );
@@ -544,15 +873,15 @@ void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 #if SHOW_ELAPSED_TIMES
 			gettimeofday( &myEndTime, &zone );
 			timersub( &myEndTime, &myStartTime, &myElapsedTime );
-			printf( "\n%s - CheckVolumeBitMap elapsed time \n", __FUNCTION__ );
-			printf( ">>>>>>>>>>>>> secs %d msecs %d \n\n", 
+			plog( "\n%s - CheckVolumeBitMap elapsed time \n", __FUNCTION__ );
+			plog( ">>>>>>>>>>>>> secs %d msecs %d \n\n", 
 				myElapsedTime.tv_sec, myElapsedTime.tv_usec );
 #endif 
 
 			if ((result = CheckForStop(GPtr)))
 				break;
 
-			WriteMsg( GPtr, M_VInfoChk, kStatusMessage );
+			fsckPrint(GPtr->context, hfsVolInfoCheck);
 
 #if SHOW_ELAPSED_TIMES
 			gettimeofday( &myStartTime, &zone );
@@ -565,8 +894,8 @@ void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 #if SHOW_ELAPSED_TIMES
 			gettimeofday( &myEndTime, &zone );
 			timersub( &myEndTime, &myStartTime, &myElapsedTime );
-			printf( "\n%s - VInfoChk elapsed time \n", __FUNCTION__ );
-			printf( ">>>>>>>>>>>>> secs %d msecs %d \n\n", 
+			plog( "\n%s - VInfoChk elapsed time \n", __FUNCTION__ );
+			plog( ">>>>>>>>>>>>> secs %d msecs %d \n\n", 
 				myElapsedTime.tv_sec, myElapsedTime.tv_usec );
 #endif
 
@@ -579,7 +908,7 @@ void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 				{
 					//	2200106, We isolate very minor errors so that if the volume cannot be unmounted
 					//	CheckDisk will just return noErr
-					short minorErrors = (GPtr->CatStat & ~S_LockedDirName)  |
+					unsigned int minorErrors = (GPtr->CatStat & ~S_LockedDirName)  |
 								GPtr->VIStat | GPtr->ABTStat | GPtr->EBTStat | GPtr->CBTStat | GPtr->JStat;
 					if ( minorErrors == 0 )
 						GPtr->RepLevel =  repairLevelVeryMinorErrors;
@@ -602,10 +931,15 @@ void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 				break;
 			if ( ( result = CheckForStop(GPtr) ) )
 				break;
-			if ( GPtr->CBTStat & S_RebuildBTree )
-				WriteMsg( GPtr, M_RebuildingCatalogBTree, kTitleMessage );
-			else
-				WriteMsg( GPtr, M_Repair, kTitleMessage );
+			if ( GPtr->CBTStat & S_RebuildBTree
+				|| GPtr->EBTStat & S_RebuildBTree
+				|| GPtr->ABTStat & S_RebuildBTree) {
+//				fsckPrint(GPtr->context, hfsRebuildCatalogBTree);
+//				fsckPrint(GPtr->context, hfsRebuildAttrBTree);
+// actually print nothing yet -- we print out when we are rebuilding the trees
+			} else {
+				fsckPrint(GPtr->context, fsckRepairingVolume);
+			}
 			result = RepairVolume( GPtr );
 			break;
 		}
@@ -621,7 +955,6 @@ void ScavCtrl( SGlobPtr GPtr, UInt32 ScavOp, short *ScavRes )
 	//
 	//	Map internal error codes to scavenger result codes
 	//
-	
 	if ( (result < 0) || (result > Max_RCode) )
 	{
 		switch ( ScavOp )
@@ -678,7 +1011,7 @@ short CheckForStop( SGlob *GPtr )
 	long	ticks		= TickCount();
 	UInt16	dfaStage	= (UInt16) GetDFAStage();
 
-        //printf("%d, %d", dfaStage, kAboutToRepairStage);
+        //plog("%d, %d", dfaStage, kAboutToRepairStage);
 
 	//if ( ((ticks - 10) > GPtr->lastTickCount) || (dfaStage == kAboutToRepairStage) )			//	To reduce cursor flicker on fast machines, call through on a timed interval
 	//{
@@ -702,11 +1035,11 @@ short CheckForStop( SGlob *GPtr )
 						GPtr->secondsRemaining	= ( ( ( 100 * elapsedTicks ) / progress ) - elapsedTicks ) / 60;
 					}
 				#endif
-				err = CallUserCancelProc( GPtr->userCancelProc, (UInt16)progress, (UInt16)GPtr->secondsRemaining, progressChanged, dfaStage, GPtr->userContext );
+				err = CallUserCancelProc( GPtr->userCancelProc, (UInt16)progress, (UInt16)GPtr->secondsRemaining, progressChanged, dfaStage, GPtr->context, GPtr->scanCount );
 			}
 			else
 			{
-				(void) CallUserCancelProc( GPtr->userCancelProc, (UInt16)progress, 0, false, dfaStage, GPtr->userContext );
+				(void) CallUserCancelProc( GPtr->userCancelProc, (UInt16)progress, 0, false, dfaStage, GPtr->context, GPtr->scanCount );
 			}
 			
 		}
@@ -746,7 +1079,6 @@ struct ScavStaticStructures {
 	SVCB				vcb;
 	SFCB				fcbList[6];		
 	BTreeControlBlock	btcb[4];			// 4 btcb's
-	SDPT				dirPath;			// scavenger directory path table
 	SBTPT				btreePath;			// scavenger BTree path table
 };
 typedef struct ScavStaticStructures ScavStaticStructures;
@@ -775,13 +1107,24 @@ static int ScavSetUp( SGlob *GPtr)
 		
 		pointer = (ScavStaticStructures *) AllocateClearMemory( sizeof(ScavStaticStructures) );
 		if ( pointer == nil ) {
-			if ( GPtr->logLevel >= kDebugLog ) {
-				printf( "\t error %d - could not allocate %ld bytes of memory \n",
+			if ( fsckGetVerbosity(GPtr->context) >= kDebugLog ) {
+				plog( "\t error %d - could not allocate %ld bytes of memory \n",
 					R_NoMem, sizeof(ScavStaticStructures) );
 			}
 			return( R_NoMem );
 		}
-	
+		GPtr->scavStaticPtr = pointer;
+
+		GPtr->DirPTPtr = AllocateClearMemory(sizeof(SDPR) * CMMaxDepth);
+		if ( GPtr->DirPTPtr == nil ) {
+			if ( fsckGetVerbosity(GPtr->context) >= kDebugLog ) {
+				plog( "\t error %d - could not allocate %ld bytes of memory \n",
+					R_NoMem, sizeof(SDPR) * CMMaxDepth );
+			}
+			return( R_NoMem );
+		}
+		GPtr->dirPathCount = CMMaxDepth;
+
 		GPtr->calculatedVCB = vcb	= &pointer->vcb;
 		vcb->vcbGPtr = GPtr;
 
@@ -799,7 +1142,6 @@ static int ScavSetUp( SGlob *GPtr)
 		GPtr->calculatedAttributesBTCB	= &pointer->btcb[3];
 		
 		GPtr->BTPTPtr					= (SBTPT*) &pointer->btreePath;
-		GPtr->DirPTPtr					= (SDPT*) &pointer->dirPath;
 	}
 	
 	
@@ -950,8 +1292,8 @@ static int ScavSetUp( SGlob *GPtr)
 	// Keep a valid file id list for HFS volumes
 	GPtr->validFilesList = (UInt32**)NewHandle( 0 );
 	if ( GPtr->validFilesList == nil ) {
-		if ( GPtr->logLevel >= kDebugLog ) {
-			printf( "\t error %d - could not allocate file ID list \n", R_NoMem );
+		if ( fsckGetVerbosity(GPtr->context) >= kDebugLog ) {
+			plog( "\t error %d - could not allocate file ID list \n", R_NoMem );
 		}
 		return( R_NoMem );
 	}
@@ -959,7 +1301,7 @@ static int ScavSetUp( SGlob *GPtr)
 	// Convert the security attribute name from utf8 to utf16.  This will
 	// avoid repeated conversion of all extended attributes to compare with
 	// security attribute name
-	(void) utf_decodestr((unsigned char *)KAUTH_FILESEC_XATTR, strlen(KAUTH_FILESEC_XATTR), GPtr->securityAttrName, &GPtr->securityAttrLen);
+	(void) utf_decodestr((unsigned char *)KAUTH_FILESEC_XATTR, strlen(KAUTH_FILESEC_XATTR), GPtr->securityAttrName, &GPtr->securityAttrLen, sizeof(GPtr->securityAttrName));
 
 	return( noErr );
 
@@ -1034,7 +1376,7 @@ static int ScavTerm( SGlobPtr GPtr )
 		btcbP = (BTreeControlBlock*)fcbP->fcbBtree;
 		if ( btcbP != nil)
 		{
-			if( btcbP->refCon != (UInt32)nil )
+			if( btcbP->refCon != nil )
 			{
 				if(((BTreeExtensionsRec*)btcbP->refCon)->BTCBMPtr != nil)
 				{
@@ -1043,13 +1385,13 @@ static int ScavTerm( SGlobPtr GPtr )
 				}
 				DisposeMemory( (Ptr)btcbP->refCon );
 				err = MemError();
-				btcbP->refCon = (UInt32)nil;
+				btcbP->refCon = nil;
 			}
 				
 			fcbP = GPtr->calculatedCatalogFCB;	//	release catalog BTree bit map
 			btcbP = (BTreeControlBlock*)fcbP->fcbBtree;
 				
-			if( btcbP->refCon != (UInt32)nil )
+			if( btcbP->refCon != nil )
 			{
 				if(((BTreeExtensionsRec*)btcbP->refCon)->BTCBMPtr != nil)
 				{
@@ -1058,14 +1400,14 @@ static int ScavTerm( SGlobPtr GPtr )
 				}
 				DisposeMemory( (Ptr)btcbP->refCon );
 				err = MemError();
-				btcbP->refCon = (UInt32)nil;
+				btcbP->refCon = nil;
 			}
 		}
 	}
 
-	DisposeMemory( GPtr->calculatedVCB );						//	Release our block of data structures	
-	err = MemError();
-
+	DisposeMemory(GPtr->DirPTPtr);
+	DisposeMemory((ScavStaticStructures *)GPtr->scavStaticPtr);
+	GPtr->scavStaticPtr = nil;
 	GPtr->calculatedVCB = nil;
 
 	return( noErr );
@@ -1180,14 +1522,14 @@ Output:		None.
 static 
 void printVerifyStatus(SGlobPtr GPtr)
 {
-    UInt16 stat;
+    UInt32 stat;
                     
     stat = GPtr->VIStat | GPtr->ABTStat | GPtr->EBTStat | GPtr->CBTStat | GPtr->CatStat;
                     
     if ( stat != 0 ) {
-        printf("   Verify Status: VIStat = 0x%04x, ABTStat = 0x%04x EBTStat = 0x%04x\n", 
+       	plog("   Verify Status: VIStat = 0x%04x, ABTStat = 0x%04x EBTStat = 0x%04x\n", 
                 GPtr->VIStat, GPtr->ABTStat, GPtr->EBTStat);     
-        printf("                  CBTStat = 0x%04x CatStat = 0x%04x\n", 
+       	plog("                  CBTStat = 0x%04x CatStat = 0x%08x\n", 
                 GPtr->CBTStat, GPtr->CatStat);
     }
 }

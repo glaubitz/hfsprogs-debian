@@ -3,21 +3,20 @@
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * "Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
- * Reserved.  This file contains Original Code and/or Modifications of
- * Original Code as defined in and that are subject to the Apple Public
- * Source License Version 1.0 (the 'License').  You may not use this file
- * except in compliance with the License.  Please obtain a copy of the
- * License at http://www.apple.com/publicsource and read it before using
- * this file.
+ * This file contains Original Code and/or Modifications of Original Code
+ * as defined in and that are subject to the Apple Public Source License
+ * Version 2.0 (the 'License'). You may not use this file except in
+ * compliance with the License. Please obtain a copy of the License at
+ * http://www.opensource.apple.com/apsl/ and read it before using this
+ * file.
  * 
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
- * License for the specific language governing rights and limitations
- * under the License."
+ * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
+ * Please see the License for the specific language governing rights and
+ * limitations under the License.
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
@@ -103,7 +102,7 @@ OSErr SearchBTreeRecord(SFCB *fcb, const void* key, UInt32 hint, void* foundKey,
 			CopyMemory(&resultIterator->key, foundKey, CalcKeySize(btcb, &resultIterator->key));	//¥¥ warning, this could overflow user's buffer!!!
 
 		if ( DEBUG_BUILD && !ValidHFSRecord(data, btcb, *dataSize) )
-			DebugStr("\pSearchBTreeRecord: bad record?");
+			DebugStr("SearchBTreeRecord: bad record?");
 	}
 
 ErrorExit:
@@ -211,7 +210,7 @@ OSErr GetBTreeRecord(SFCB *fcb, SInt16 selectionIndex, void* key, void* data, UI
 		CopyMemory(&iterator->key, key, CalcKeySize(btcb, &iterator->key));	//¥¥ warning, this could overflow user's buffer!!!
 		
 		if ( DEBUG_BUILD && !ValidHFSRecord(data, btcb, *dataSize) )
-			DebugStr("\pGetBTreeRecord: bad record?");
+			DebugStr("GetBTreeRecord: bad record?");
 
 	}
 	
@@ -243,7 +242,7 @@ OSErr InsertBTreeRecord(SFCB *fcb, const void* key, const void* data, UInt16 dat
 	CopyMemory(key, &iterator.key, CalcKeySize(btcb, (BTreeKey *) key));	//¥¥ should we range check against maxkeylen?
 
 	if ( DEBUG_BUILD && !ValidHFSRecord(data, btcb, dataSize) )
-		DebugStr("\pInsertBTreeRecord: bad record?");
+		DebugStr("InsertBTreeRecord: bad record?");
 
 	result = BTInsertRecord( fcb, &iterator, &btRecord, dataSize );
 
@@ -305,7 +304,7 @@ OSErr ReplaceBTreeRecord(SFCB *fcb, const void* key, UInt32 hint, void *newData,
 	CopyMemory(key, &iterator.key, CalcKeySize(btcb, (BTreeKey *) key));		//¥¥ should we range check against maxkeylen?
 
 	if ( DEBUG_BUILD && !ValidHFSRecord(newData, btcb, dataSize) )
-		DebugStr("\pReplaceBTreeRecord: bad record?");
+		DebugStr("ReplaceBTreeRecord: bad record?");
 
 	result = BTReplaceRecord( fcb, &iterator, &btRecord, dataSize );
 
@@ -322,7 +321,9 @@ ErrorExit:
 OSStatus
 SetEndOfForkProc ( SFCB *filePtr, FSSize minEOF, FSSize maxEOF )
 {
+#if !LINUX
 #pragma unused (maxEOF)
+#endif
 
 	OSStatus	result;
 	UInt32		actualSectorsAdded;
@@ -342,7 +343,7 @@ SetEndOfForkProc ( SFCB *filePtr, FSSize minEOF, FSSize maxEOF )
 	else
 	{
 		if ( DEBUG_BUILD )
-			DebugStr("\pSetEndOfForkProc: minEOF is smaller than current size!");
+			DebugStr("SetEndOfForkProc: minEOF is smaller than current size!");
 		return -1;
 	}
 
@@ -355,8 +356,8 @@ SetEndOfForkProc ( SFCB *filePtr, FSSize minEOF, FSSize maxEOF )
 	// of the old catalog file with the rebuilt catalog file at the end of
 	// the rebuild process.  Extent records use the file ID as part of the key so 
 	// it would be messy to fix them after the swap.
-	if ( filePtr->fcbFileID == kHFSRepairCatalogFileID )
-		flags |= kEFContigMask;
+	if ( filePtr->fcbFileID == kHFSRepairCatalogFileID)
+		flags |= kEFNoExtOvflwMask;
 	
 	result = ExtendFileC ( vcb, filePtr, (bytesToAdd+511)>>9, flags, &actualSectorsAdded );
 	ReturnIfError(result);
@@ -368,7 +369,7 @@ SetEndOfForkProc ( SFCB *filePtr, FSSize minEOF, FSSize maxEOF )
 	//	Make sure we got at least as much space as we needed
 	//
 	if (filePtr->fcbLogicalSize < minEOF) {
-		Panic("\pSetEndOfForkProc: disk too full to extend B-tree file");
+		Panic("SetEndOfForkProc: disk too full to extend B-tree file");
 		return dskFulErr;
 	}
 	
@@ -381,8 +382,8 @@ SetEndOfForkProc ( SFCB *filePtr, FSSize minEOF, FSSize maxEOF )
 		if (	(filePtr->fcbFileID == kHFSExtentsFileID) 
 			 ||	(filePtr->fcbFileID == kHFSCatalogFileID)
 			 ||	(filePtr->fcbFileID == kHFSStartupFileID)
-			 ||	(filePtr->fcbFileID == kHFSRepairCatalogFileID)
-			 ||	(filePtr->fcbFileID == kHFSAttributesFileID) )
+			 ||	(filePtr->fcbFileID == kHFSAttributesFileID)
+			 ||	(filePtr->fcbFileID == kHFSRepairCatalogFileID) )
 		{
 			MarkVCBDirty( vcb );
 			result = FlushAlternateVolumeControlBlock( vcb, true );
@@ -440,7 +441,7 @@ static OSErr CheckBTreeKey(const BTreeKey *key, const BTreeControlBlock *btcb)
 	if ( (keyLen < 6) || (keyLen > btcb->maxKeyLength) )
 	{
 		if ( DEBUG_BUILD )
-			DebugStr("\pCheckBTreeKey: bad key length!");
+			DebugStr("CheckBTreeKey: bad key length!");
 		return fsBTInvalidKeyLengthErr;
 	}
 	

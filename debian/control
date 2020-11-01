@@ -2,16 +2,14 @@ Source: hfsprogs
 Section: otherosfs
 Priority: optional
 Maintainer: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+Build-Depends: debhelper-compat (= 12),
+               libbsd-dev,
+               libssl-dev,
+                uuid-dev
+Standards-Version: 3.9.3
 Homepage: https://opensource.apple.com/source/diskdev_cmds/
 Vcs-Browser: https://salsa.debian.org/debian/hfsprogs
 Vcs-Git: https://salsa.debian.org/debian/hfsprogs.git
-
-Build-Depends:
- debhelper-compat (= 12),
- libbsd-dev,
- libssl-dev,
- uuid-dev
-Standards-Version: 3.9.3
 
 Package: hfsprogs
 Architecture: any

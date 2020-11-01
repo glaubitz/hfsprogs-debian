@@ -1,0 +1,20 @@
+From: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+Date: Sun, 1 Nov 2020 18:10:18 +0100
+Subject: Replace $(PWD) with $(CURDIR) in Makefile
+
+---
+ Makefile | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/Makefile b/Makefile
+index e72bf46..6e7353c 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,6 +1,6 @@
+ VERSION=540.1.linux3
+ 
+-CFLAGS += -I$(PWD)/include -DDEBUG_BUILD=0 -D_FILE_OFFSET_BITS=64 -D LINUX=1 -D BSD=1 -D VERSION=\"$(VERSION)\"
++CFLAGS += -I$(CURDIR)/include -DDEBUG_BUILD=0 -D_FILE_OFFSET_BITS=64 -D LINUX=1 -D BSD=1 -D VERSION=\"$(VERSION)\"
+ LDFLAGS := -Wl,--build-id
+ SUBDIRS := newfs_hfs.tproj fsck_hfs.tproj
+ 

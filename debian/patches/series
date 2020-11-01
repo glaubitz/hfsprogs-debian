@@ -1,3 +1,4 @@
 0001-Remove-usage-of-the-Blocks-C-language-extension-to-e.patch
 0002-Fix-usage-of-stdarg-to-fix-FTBFS-on-ARM.patch
 0003-Use-sysctl.h-from-the-Linux-kernel-headers-instead-o.patch
+0004-Replace-PWD-with-CURDIR-in-Makefile.patch

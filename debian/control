@@ -2,7 +2,7 @@ Source: hfsprogs
 Section: otherosfs
 Priority: optional
 Maintainer: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
-Homepage: http://www.opensource.apple.com/darwinsource/10.4/
+Homepage: https://opensource.apple.com/source/diskdev_cmds/
 Vcs-Browser: https://salsa.debian.org/debian/hfsprogs
 Vcs-Git: https://salsa.debian.org/debian/hfsprogs.git
 

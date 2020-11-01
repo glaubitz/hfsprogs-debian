@@ -8,9 +8,6 @@ docdir=$(tmpdir)/usr/share/doc/$(package)
 mansec=8
 mandir=$(tmpdir)/usr/share/man/man$(mansec)
 
-CFLAGS += -DDEBUG_BUILD=0 -D_FILE_OFFSET_BITS=64 -D LINUX=1 -D BSD=1 -I$(CURDIR)/include
-LDFLAGS += -Wl,--as-needed
-
 %:
 	dh $@
 

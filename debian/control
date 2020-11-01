@@ -6,7 +6,7 @@ Build-Depends: debhelper-compat (= 12),
                libbsd-dev,
                libssl-dev,
                 uuid-dev
-Standards-Version: 3.9.3
+Standards-Version: 4.5.0
 Homepage: https://opensource.apple.com/source/diskdev_cmds/
 Vcs-Browser: https://salsa.debian.org/debian/hfsprogs
 Vcs-Git: https://salsa.debian.org/debian/hfsprogs.git

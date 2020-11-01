@@ -1,60 +1,98 @@
 /*
- * Copyright (c) 1999 Apple Computer, Inc. All rights reserved.
+ * Copyright (c) 1999-2000, 2002, 2005, 2007-2008 Apple Inc. All rights reserved.
  *
  * @APPLE_LICENSE_HEADER_START@
  * 
- * "Portions Copyright (c) 1999 Apple Computer, Inc.  All Rights
- * Reserved.  This file contains Original Code and/or Modifications of
- * Original Code as defined in and that are subject to the Apple Public
- * Source License Version 1.0 (the 'License').  You may not use this file
- * except in compliance with the License.  Please obtain a copy of the
- * License at http://www.apple.com/publicsource and read it before using
- * this file.
+ * This file contains Original Code and/or Modifications of Original Code
+ * as defined in and that are subject to the Apple Public Source License
+ * Version 2.0 (the 'License'). You may not use this file except in
+ * compliance with the License. Please obtain a copy of the License at
+ * http://www.opensource.apple.com/apsl/ and read it before using this
+ * file.
  * 
  * The Original Code and all software distributed under the License are
  * distributed on an 'AS IS' basis, WITHOUT WARRANTY OF ANY KIND, EITHER
  * EXPRESS OR IMPLIED, AND APPLE HEREBY DISCLAIMS ALL SUCH WARRANTIES,
  * INCLUDING WITHOUT LIMITATION, ANY WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE OR NON-INFRINGEMENT.  Please see the
- * License for the specific language governing rights and limitations
- * under the License."
+ * FITNESS FOR A PARTICULAR PURPOSE, QUIET ENJOYMENT OR NON-INFRINGEMENT.
+ * Please see the License for the specific language governing rights and
+ * limitations under the License.
  * 
  * @APPLE_LICENSE_HEADER_END@
  */
 #include "SRuntime.h"
+#include "../fsck_hfs.h"
 
 #if BSD
 
 #include <unistd.h>
 #include <errno.h>
 #include <sys/ioctl.h>
-
-#include <IOKit/storage/IOMediaBSDClient.h>
-
+#if LINUX
+#include <fcntl.h>
+#include <sys/stat.h>
 #else
-
+#include <IOKit/storage/IOMediaBSDClient.h>
+#endif /* LINUX */
+#else
 #include <Files.h>
 #include <Device.h>
 #include <Disks.h>
 
-#endif
-
+#endif 
 
 OSErr GetDeviceSize(int driveRefNum, UInt64 *numBlocks, UInt32 *blockSize)
 {
 #if BSD
 	UInt64 devBlockCount = 0;
 	int devBlockSize = 0;
+#if LINUX
+	struct stat stbuf;
 
+	devBlockSize = 512;
+
+#ifndef BLKGETSIZE
+#define BLKGETSIZE              _IO(0x12,96)
+#endif
+#ifndef BLKGETSIZE64
+#define BLKGETSIZE64            _IOR(0x12,114,size_t)
+#endif
+	if (fstat(driveRefNum, &stbuf) < 0){
+		printf("Error: %s\n", strerror(errno));
+		return(-1);
+	}
+        
+        if (S_ISREG(stbuf.st_mode)) {
+                devBlockCount = stbuf.st_size / 512;
+        } 
+        else if (S_ISBLK(stbuf.st_mode)) {
+                unsigned long size;
+                u_int64_t size64;
+                if (!ioctl(driveRefNum, BLKGETSIZE64, &size64))
+                        devBlockCount = size64 / 512;
+                else if (!ioctl(driveRefNum, BLKGETSIZE, &size))
+                        devBlockCount = size;
+                else{
+                        printf("Error: %s\n", strerror(errno));
+			return(-1);
+		}
+			
+        }
+        else{
+                printf("Device is not a block device");
+		return(-1);
+	}
+#elif BSD
 	if (ioctl(driveRefNum, DKIOCGETBLOCKCOUNT, &devBlockCount) < 0) {
-		printf("ioctl(DKIOCGETBLOCKCOUNT) for fd %d: %s\n", driveRefNum, strerror(errno));
+		plog("ioctl(DKIOCGETBLOCKCOUNT) for fd %d: %s\n", driveRefNum, strerror(errno));
 		return (-1);
 	}
 	
 	if (ioctl(driveRefNum, DKIOCGETBLOCKSIZE, &devBlockSize) < 0) {
-		printf("ioctl(DKIOCGETBLOCKSIZE) for fd %d: %s\n", driveRefNum, strerror(errno));
+		plog("ioctl(DKIOCGETBLOCKSIZE) for fd %d: %s\n", driveRefNum, strerror(errno));
 		return (-1);
 	}
+#endif /* BSD */
 
 	if (devBlockSize != 512) {
 		*numBlocks = (devBlockCount * (UInt64)devBlockSize) / 512;
@@ -193,7 +231,7 @@ OSErr DeviceRead(int device, int drive, void* buffer, SInt64 offset, UInt32 reqB
 
 	seek_off = lseek(device, offset, SEEK_SET);
 	if (seek_off == -1) {
-		printf("# DeviceRead: lseek(%qd) failed with %d\n", offset, errno);
+		plog("# DeviceRead: lseek(%qd) failed with %d\n", offset, errno);
 		return (errno);
 	}
 
@@ -201,7 +239,7 @@ OSErr DeviceRead(int device, int drive, void* buffer, SInt64 offset, UInt32 reqB
 	if (nbytes == -1)
 		return (errno);
 	if (nbytes == 0) {
-		printf("CANNOT READ: BLK %ld\n", (long)offset/512);
+		plog("CANNOT READ: BLK %ld\n", (long)offset/512);
 		return (5);
 	}
 
@@ -245,7 +283,7 @@ OSErr DeviceWrite(int device, int drive, void* buffer, SInt64 offset, UInt32 req
 
 	seek_off = lseek(device, offset, SEEK_SET);
 	if (seek_off == -1) {
-		printf("# DeviceRead: lseek(%qd) failed with %d\n", offset, errno);
+		plog("# DeviceRead: lseek(%qd) failed with %d\n", offset, errno);
 		return (errno);
 	}
 
@@ -254,7 +292,7 @@ OSErr DeviceWrite(int device, int drive, void* buffer, SInt64 offset, UInt32 req
 		return (errno);
 	}
 	if (nbytes == 0) {
-		printf("CANNOT WRITE: BLK %ld\n", (long)offset/512);
+		plog("CANNOT WRITE: BLK %ld\n", (long)offset/512);
 		return (5);
 	}
 

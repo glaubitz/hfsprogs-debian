@@ -1,0 +1,10 @@
+CFILES = data.c runtime.c
+OFILES = $(CFILES:.c=.o)
+
+libBlocksRunTime.a: $(OFILES)
+	ar rc $@ $?
+
+all: libBlocksRunTime.a
+
+clean:
+	$(RM) $(OFILES) libBlocksRunTime.a

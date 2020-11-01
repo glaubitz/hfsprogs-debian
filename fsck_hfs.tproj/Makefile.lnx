@@ -1,0 +1,16 @@
+CFILES = fsck_hfs.c utilities.c cache.c fsck_messages.c fsck_debug.c fsck_hfs_strings.c fsck_strings.c
+OFILES = $(CFILES:.c=.o)
+
+all: fsck_hfs
+
+fsck_hfs: $(OFILES) dfalib/libdfa.a
+	  $(CC) $(CFLAGS) $(LDFLAGS) $(OFILES) dfalib/libdfa.a -o fsck_hfs -lBlocksRunTime -lpthread
+
+dfalib/libdfa.a: FORCE
+	$(MAKE) -C dfalib -f Makefile.lnx libdfa.a
+
+clean:
+	$(RM) fsck_hfs $(OFILES)
+	$(MAKE) -C dfalib -f Makefile.lnx clean
+
+.PHONY : FORCE clean

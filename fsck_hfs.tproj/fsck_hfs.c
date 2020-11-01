@@ -30,7 +30,7 @@
 #include <sys/ioctl.h>
 #if !LINUX
 #include <sys/disk.h>
-#include <sys/sysctl.h>
+#include <linux/sysctl.h>
 #include <setjmp.h>
 #endif
 #include <hfs/hfs_mount.h>

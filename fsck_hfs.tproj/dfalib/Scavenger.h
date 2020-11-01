@@ -48,7 +48,7 @@
 #endif
 #include <sys/errno.h>
 #include <sys/param.h>
-#include <sys/sysctl.h>
+#include <linux/sysctl.h>
 #include <sys/mount.h>
 #include <hfs/hfs_mount.h>
 

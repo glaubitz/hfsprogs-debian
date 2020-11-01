@@ -70,7 +70,7 @@
 #include <string.h>
 #include <unistd.h> 
 #include <stdlib.h>
-#include <sys/sysctl.h>
+#include <linux/sysctl.h>
 
 #include "fsck_hfs.h"
 

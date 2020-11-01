@@ -38,7 +38,7 @@
 #endif
 #include <sys/errno.h>
 #include <sys/stat.h>
-#include <sys/sysctl.h>
+#include <linux/sysctl.h>
 #if !LINUX
 #include <sys/vmmeter.h>
 #endif

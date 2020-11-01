@@ -1,7 +1,7 @@
 Source: hfsprogs
 Section: otherosfs
 Priority: optional
-Maintainer: Rogério Brito <rbrito@ime.usp.br>
+Maintainer: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
 Homepage: http://www.opensource.apple.com/darwinsource/10.4/
 Build-Depends:
  debhelper (>= 9),

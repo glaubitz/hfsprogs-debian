@@ -4,7 +4,7 @@ OFILES = $(CFILES:.c=.o)
 all: fsck_hfs
 
 fsck_hfs: $(OFILES) dfalib/libdfa.a
-	  $(CC) $(CFLAGS) $(LDFLAGS) $(OFILES) dfalib/libdfa.a -o fsck_hfs -lBlocksRunTime -lpthread
+	  $(CC) $(CFLAGS) $(LDFLAGS) $(OFILES) dfalib/libdfa.a -o fsck_hfs -lpthread
 
 dfalib/libdfa.a: FORCE
 	$(MAKE) -C dfalib -f Makefile.lnx libdfa.a

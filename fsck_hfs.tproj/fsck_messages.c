@@ -29,7 +29,6 @@
 #include <stdarg.h>
 #include <string.h>
 #include <assert.h>
-#include <Block.h>
 
 #include "fsck_messages.h"
 #include "fsck_keys.h"
@@ -287,20 +286,10 @@ fsckSetBlock(fsck_ctx_t c, fsck_block_phase_t phase, fsckBlock_t bp)
 	if (c != NULL) {
 		switch (phase) {
 		case fsckPhaseBeforeMessage:
-			if (ctx->preMessage) {
-				Block_release(ctx->preMessage);
-				ctx->preMessage = NULL;
-			}
-			if (bp)
-				ctx->preMessage = (fsckBlock_t)Block_copy(bp);
+			ctx->preMessage = bp;
 			break;
 		case fsckPhaseAfterMessage:
-			if (ctx->postMessage) {
-				Block_release(ctx->postMessage);
-				ctx->postMessage = NULL;
-			}
-			if (bp)
-				ctx->postMessage = (fsckBlock_t)Block_copy(bp);
+			ctx->postMessage = bp;
 			break;
 		case fsckPhaseNone:
 			/* Just here for compiler warnings */
@@ -590,12 +579,6 @@ fsckDestroy(fsck_ctx_t c)
 
 	if (ctx->flags & cfFromFD) {
 		fclose(ctx->fp);
-	}
-	if (ctx->preMessage) {
-		Block_release(ctx->preMessage);
-	}
-	if (ctx->postMessage) {
-		Block_release(ctx->postMessage);
 	}
 
 	free(ctx);

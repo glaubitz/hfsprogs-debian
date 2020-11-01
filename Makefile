@@ -1,6 +1,6 @@
 VERSION=540.1.linux3
 
-CFLAGS += -I$(PWD)/include -DDEBUG_BUILD=0 -D_FILE_OFFSET_BITS=64 -D LINUX=1 -D BSD=1 -D VERSION=\"$(VERSION)\"
+CFLAGS += -I$(CURDIR)/include -DDEBUG_BUILD=0 -D_FILE_OFFSET_BITS=64 -D LINUX=1 -D BSD=1 -D VERSION=\"$(VERSION)\"
 LDFLAGS := -Wl,--build-id
 SUBDIRS := newfs_hfs.tproj fsck_hfs.tproj
 

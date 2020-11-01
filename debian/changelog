@@ -1,3 +1,25 @@
+hfsprogs (540.1.linux3-1) unstable; urgency=medium
+
+  * New upstream version (Closes: #765104)
+  * Remove all Debian patches for the previous upstream version
+  * Set myself as maintainer in debian/control (Closes: #958522)
+  * Strip unnecessary CFLAGS and LDFLAGS from debian/rules
+  * Remove unnecessary override_dh_auto_build from debian/rules
+  * Add uuid-dev to Build-Depends in debian/control
+  * Remove installation of hfsbootdata.img from debian/rules
+  * Update debhelper version to 12 and switch to debhelper-compat
+  * Add patch from Fedora to allow building hfsprogs with gcc
+  * Add patch from Fedora to fix FTBFS on ARM
+  * Add patch from Fedora to fix FTBFS with glibc >= 2.32 (Closes: #967986)
+  * Add patch to replace $(PWD) with $(CURDIR) in Makefile
+  * Convert debian/copyright to machine-readable format and update years
+  * Add Vcs-* fields to debian/control
+  * Update Homepage field in debian/control
+  * Reformat debian/control to match commonly used format
+  * Update Standards-Version to 4.5.0 in debian/control
+
+ -- John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>  Sun, 01 Nov 2020 18:56:49 +0100
+
 hfsprogs (332.25-11) unstable; urgency=low
 
   * debian/control: Remove DMUA flag.

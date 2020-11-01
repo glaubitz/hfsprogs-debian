@@ -11,9 +11,6 @@ mandir=$(tmpdir)/usr/share/man/man$(mansec)
 %:
 	dh $@
 
-override_dh_auto_build:
-	$(MAKE) -f Makefile.lnx CFLAGS="$(CFLAGS)" LDFLAGS="$(LDFLAGS)"
-
 override_dh_auto_install:
 	dh_testdir
 	dh_testroot

@@ -1,0 +1,63 @@
+From: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+Date: Sun, 1 Nov 2020 18:09:28 +0100
+Subject: Use sysctl.h from the Linux kernel headers instead of glibc
+
+---
+ fsck_hfs.tproj/dfalib/Scavenger.h | 2 +-
+ fsck_hfs.tproj/fsck_hfs.c         | 2 +-
+ fsck_hfs.tproj/utilities.c        | 2 +-
+ newfs_hfs.tproj/makehfs.c         | 2 +-
+ 4 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/fsck_hfs.tproj/dfalib/Scavenger.h b/fsck_hfs.tproj/dfalib/Scavenger.h
+index d71b3eb..1fb2d79 100644
+--- a/fsck_hfs.tproj/dfalib/Scavenger.h
++++ b/fsck_hfs.tproj/dfalib/Scavenger.h
+@@ -48,7 +48,7 @@
+ #endif
+ #include <sys/errno.h>
+ #include <sys/param.h>
+-#include <sys/sysctl.h>
++#include <linux/sysctl.h>
+ #include <sys/mount.h>
+ #include <hfs/hfs_mount.h>
+ 
+diff --git a/fsck_hfs.tproj/fsck_hfs.c b/fsck_hfs.tproj/fsck_hfs.c
+index 446a27a..415f350 100644
+--- a/fsck_hfs.tproj/fsck_hfs.c
++++ b/fsck_hfs.tproj/fsck_hfs.c
+@@ -30,7 +30,7 @@
+ #include <sys/ioctl.h>
+ #if !LINUX
+ #include <sys/disk.h>
+-#include <sys/sysctl.h>
++#include <linux/sysctl.h>
+ #include <setjmp.h>
+ #endif
+ #include <hfs/hfs_mount.h>
+diff --git a/fsck_hfs.tproj/utilities.c b/fsck_hfs.tproj/utilities.c
+index fc53452..b301e4a 100644
+--- a/fsck_hfs.tproj/utilities.c
++++ b/fsck_hfs.tproj/utilities.c
+@@ -70,7 +70,7 @@
+ #include <string.h>
+ #include <unistd.h> 
+ #include <stdlib.h>
+-#include <sys/sysctl.h>
++#include <linux/sysctl.h>
+ 
+ #include "fsck_hfs.h"
+ 
+diff --git a/newfs_hfs.tproj/makehfs.c b/newfs_hfs.tproj/makehfs.c
+index 7315dbc..8412478 100644
+--- a/newfs_hfs.tproj/makehfs.c
++++ b/newfs_hfs.tproj/makehfs.c
+@@ -38,7 +38,7 @@
+ #endif
+ #include <sys/errno.h>
+ #include <sys/stat.h>
+-#include <sys/sysctl.h>
++#include <linux/sysctl.h>
+ #if !LINUX
+ #include <sys/vmmeter.h>
+ #endif

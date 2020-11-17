@@ -1,5 +1,5 @@
 Source: hfsprogs
-Section: otherosfs
+Section: non-free/otherosfs
 Priority: optional
 Maintainer: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
 Build-Depends: debhelper-compat (= 12),

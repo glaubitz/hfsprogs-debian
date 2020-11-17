@@ -21,5 +21,3 @@ override_dh_auto_install:
 	install -m 755 fsck_hfs.tproj/fsck_hfs     $(tmpdir)/sbin/fsck.hfsplus
 	install -m 644 newfs_hfs.tproj/newfs_hfs.8 $(mandir)/mkfs.hfsplus.8
 	install -m 644 fsck_hfs.tproj/fsck_hfs.8   $(mandir)/fsck.hfsplus.8
-
-override_dh_auto_test:

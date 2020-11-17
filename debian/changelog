@@ -1,3 +1,12 @@
+hfsprogs (540.1.linux3-2) unstable; urgency=medium
+
+  * Change Section to non-free/otherosfs in debian/control (Closes: #666707)
+  * Set XS-Autobuild to yes in debian/control
+  * Remove unused target override_dh_auto_clean in debian/rules
+  * Remove unused target override_dh_auto_test in debian/rules
+
+ -- John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>  Tue, 17 Nov 2020 11:16:06 +0100
+
 hfsprogs (540.1.linux3-1) unstable; urgency=medium
 
   * New upstream version (Closes: #765104)

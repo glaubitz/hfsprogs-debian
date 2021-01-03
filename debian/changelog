@@ -1,3 +1,10 @@
+hfsprogs (540.1.linux3-3) unstable; urgency=medium
+
+  * Add copyright and license for BlocksRunTime in debian/copyright
+  * Remove obsolete reference to Gentoo patch in debian/README.Debian
+
+ -- John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>  Sun, 03 Jan 2021 15:13:34 +0100
+
 hfsprogs (540.1.linux3-2) unstable; urgency=medium
 
   * Change Section to non-free/otherosfs in debian/control (Closes: #666707)

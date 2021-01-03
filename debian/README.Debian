@@ -6,8 +6,4 @@ This package currently only provides mkfs.hfs (mkhfs) and fsck.hfs
 sources, such as a utility to tune a filesystem, like disabling the
 journaling of the filesystem.
 
-It includes a patch from from Gentoo, as described in their wiki:
-<http://gentoo-wiki.com/HOWTO_hfsplus>.
-
-
  -- Rogério Brito <rbrito@users.sf.net>  Mon, 16 Jul 2007 17:55:21 -0300

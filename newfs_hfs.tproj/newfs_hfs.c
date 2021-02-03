@@ -194,7 +194,10 @@ main(argc, argv)
 	else
 		progname = *argv;
 
-	forceHFS = FALSE;
+	if (strcmp(progname, "mkfs.hfs") == 0)
+		forceHFS = TRUE;
+	else
+		forceHFS = FALSE;
 
 	while ((ch = getopt(argc, argv, "G:J:D:M:N:PU:hswb:c:i:n:v:")) != EOF)
 		switch (ch) {

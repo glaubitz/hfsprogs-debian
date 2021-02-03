@@ -232,6 +232,10 @@ struct hfsparams {
 };
 typedef struct hfsparams hfsparams_t;
 
+
+extern int make_hfs(const DriveInfo *driveInfo, hfsparams_t *defaults,
+				UInt32 *totalSectors, UInt32 *sectorOffset);
+
 extern int make_hfsplus(const DriveInfo *driveInfo, hfsparams_t *defaults);
 
 

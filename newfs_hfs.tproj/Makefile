@@ -19,3 +19,7 @@ endif
 
 include $(MAKEFILEPATH)/CoreOS/ReleaseControl/BSDCommon.make
 
+HFSBOOTDATA_DIR = /usr/share/misc
+after_install:
+        $(MKDIR) "$(DSTROOT)/$(HFSBOOTDATA_DIR)"
+        $(INSTALL_FILE) hfsbootdata.img "$(DSTROOT)/$(HFSBOOTDATA_DIR)"/hfsbootdata

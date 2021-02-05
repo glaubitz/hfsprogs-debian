@@ -1,3 +1,14 @@
+hfsprogs (540.1.linux3-4) unstable; urgency=medium
+
+  * Add patch to re-add support for creating legacy HFS filesystems
+    (Closes: #973911)
+  * Add patch to create legacy HFS filesytems when newfs_hfs
+    is invoked as mkfs.hfs
+  * Add hfsbootdata.img from upstream to debian directory
+  * Re-add installation of hfsbootdata.img to debian/rules
+
+ -- John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>  Fri, 05 Feb 2021 12:02:59 +0100
+
 hfsprogs (540.1.linux3-3) unstable; urgency=medium
 
   * Add copyright and license for BlocksRunTime in debian/copyright

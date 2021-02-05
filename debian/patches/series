@@ -2,3 +2,4 @@
 0002-Fix-usage-of-stdarg-to-fix-FTBFS-on-ARM.patch
 0003-Use-sysctl.h-from-the-Linux-kernel-headers-instead-o.patch
 0004-Replace-PWD-with-CURDIR-in-Makefile.patch
+0005-Re-add-support-for-creating-legacy-HFS-filesystems.patch

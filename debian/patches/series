@@ -3,3 +3,4 @@
 0003-Use-sysctl.h-from-the-Linux-kernel-headers-instead-o.patch
 0004-Replace-PWD-with-CURDIR-in-Makefile.patch
 0005-Re-add-support-for-creating-legacy-HFS-filesystems.patch
+0006-Create-legacy-HFS-filesytems-when-newfs_hfs-is-invok.patch

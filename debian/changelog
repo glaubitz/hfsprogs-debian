@@ -1,3 +1,15 @@
+hfsprogs (540.1.linux3-5) unstable; urgency=medium
+
+  * Add hfsprogs-udeb package to debian/control
+  * Add dh-exec to Build-Depends in debian/control
+  * Add fsck.hfsplus and mkfs.hfsplus to debian/hfsprogs-udeb.install
+  * Add symlinks for fsck.hfs and mkfs.hfs to debian/hfsprogs-udeb.links
+  * Move hfsprogs install from debian/rules to debian/hfsprogs.install
+  * Rename debian/links to debian/hfsprogs.links
+  * Reorder filenames in alphabetical order in debian/hfsprogs.links
+
+ -- John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>  Mon, 08 Mar 2021 10:28:00 +0100
+
 hfsprogs (540.1.linux3-4) unstable; urgency=medium
 
   * Add patch to re-add support for creating legacy HFS filesystems

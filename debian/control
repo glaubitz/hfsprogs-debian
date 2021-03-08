@@ -39,3 +39,15 @@ Description: mkfs and fsck for HFS and HFS+ file systems
  more HFS+ filesystems in use, as Apple has announced Macintoshes for
  ix86-64, besides the filesystem being already supported by PowerPC
  systems since the beginning.
+
+Package: hfsprogs-udeb
+XC-Package-Type: udeb
+Architecture: any
+Section: non-free/debian-installer
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: stripped-down version of hfsprogs, for debian-installer
+ This package is a hfsprogs package built for reduced size, so that it
+ can help to save space in debian-installer.
+ .
+ Don't attempt to install this package, it has no support for a couple of
+ features you surely want.  Anyway, it should fail to install.

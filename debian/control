@@ -4,6 +4,7 @@ XS-Autobuild: yes
 Priority: optional
 Maintainer: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
 Build-Depends: debhelper-compat (= 12),
+               dh-exec,
                libbsd-dev,
                libssl-dev,
                 uuid-dev

@@ -1,0 +1,4 @@
+#!/usr/bin/dh-exec
+debian/hfsbootdata.img => usr/share/misc/hfsbootdata
+fsck_hfs.tproj/fsck_hfs => sbin/fsck.hfsplus
+newfs_hfs.tproj/newfs_hfs => sbin/mkfs.hfsplus
